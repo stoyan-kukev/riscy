@@ -1,4 +1,5 @@
 const std = @import("std");
+const Tokenizer = @import("tokenizer.zig").Tokenizer;
 
 pub fn main() !void {
     var da: std.heap.DebugAllocator(.{}) = .{};
@@ -15,6 +16,16 @@ pub fn main() !void {
         const source = try std.fs.cwd().readFileAlloc(allocator, args[1], std.math.maxInt(usize));
         defer allocator.free(source);
 
-        std.debug.print("{s}\n", .{source});
+        var tokenizer: Tokenizer = .init(source);
+        var tokens = try tokenizer.tokenize(allocator);
+        defer tokens.deinit(allocator);
+
+        for (tokens.items) |token| {
+            std.debug.print("{f}\n", .{token});
+        }
     }
+}
+
+test {
+    _ = @import("tokenizer.zig");
 }
