@@ -4,7 +4,7 @@ pub const Token = struct {
     tag: Tag,
     loc: Loc,
 
-    pub fn format(this: @This(), w: *std.io.Writer) !void {
+    pub fn format(this: @This(), w: *std.Io.Writer) !void {
         try w.print("{s}", .{@tagName(this.tag)});
     }
 

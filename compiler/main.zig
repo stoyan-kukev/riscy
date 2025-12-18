@@ -13,7 +13,7 @@ pub fn main() !void {
         std.log.info("Enter the name of the .ry file", .{});
         return std.process.exit(1);
     } else {
-        const source = try std.fs.cwd().readFileAlloc(allocator, args[1], std.math.maxInt(usize));
+        const source = try std.fs.cwd().readFileAlloc(args[1], allocator, .unlimited);
         defer allocator.free(source);
 
         var tokenizer: Tokenizer = .init(source);
