@@ -8,21 +8,31 @@ block = "{" , { statement } , "}";
 statement = declaration
           | if_stmt
           | while_stmt
-          | for_stmt    
-          | switch_stmt 
+          | for_stmt
+          | switch_stmt
           | return_stmt
           | break_stmt
           | continue_stmt
+          | defer_stmt
           | expression_stmt;
 
 /* ==========================================================================
    2. DECLARATIONS
    ========================================================================== */
-declaration = [ "pub" ] , ( "const" | "var" ) , identifier , [ ":" , type_expr ] , "=" , expression , ";";
+declaration = [ "pub" ]
+            , [ "extern" | "export" ]
+            , [ "linksection" , "(" , string_literal , ")" ]
+            , ( "const" | "var" ) , identifier
+            , [ ":" , type_expr ]
+            , [ "align" , "(" , expression , ")" ]
+            , [ "=" , expression ]
+            , ";";
 
 /* ==========================================================================
    3. CONTROL FLOW
    ========================================================================== */
+defer_stmt = ( "defer" | "errdefer" ) , ( statement | block );
+
 if_stmt = "if" , "(" , expression , ")" , block , [ "else" , ( block | if_stmt ) ];
 
 while_stmt = "while" , "(" , expression , ")" , block;
@@ -38,7 +48,7 @@ expression_stmt = expression , ";";
 switch_stmt = "switch" , "(" , expression , ")" , "{" , { switch_prong } , "}";
 
 switch_prong = switch_patterns , "=>" , ( statement | block ) , ",";
-switch_patterns = "else" 
+switch_patterns = "else"
                 | expression , { "," , expression };
 
 /* ==========================================================================
@@ -47,7 +57,7 @@ switch_patterns = "else"
 type_expr = type_prefix , type_core;
 
 /* Recursive prefixes: *!?Node, *Node, [*]Node */
-type_prefix = { "*" | "?" | "!" | "[" , "*" , "]" }; 
+type_prefix = { "*" | "?" | "!" | "[" , "*" , "]" };
 
 type_core = identifier
           | struct_def
@@ -62,7 +72,7 @@ struct_def = "struct" , [ "." , "packed" ] , "{" , { container_decl } , "}";
 union_def = "union" , "{" , { container_decl } , "}";
 
 /* Fields or Nested Decls */
-container_decl = field_decl 
+container_decl = field_decl
                | declaration;
 
 field_decl = identifier , ":" , type_expr , ",";

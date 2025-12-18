@@ -58,6 +58,14 @@ pub const Token = struct {
         @"volatile",
         naked,
         interrupt,
+        @"align",
+        @"linksection",
+        @"extern",
+        @"export",
+
+        // Control Flow (Extended)
+        @"defer",
+        @"errdefer",
 
         // Punctuation
         l_brace,
@@ -377,6 +385,12 @@ pub const Tokenizer = struct {
         .{ "volatile", .@"volatile" },
         .{ "naked", .naked },
         .{ "interrupt", .interrupt },
+        .{ "align", .@"align" },
+        .{ "linksection", .@"linksection" },
+        .{ "extern", .@"extern" },
+        .{ "export", .@"export" },
+        .{ "defer", .@"defer" },
+        .{ "errdefer", .@"errdefer" },
     });
 };
 
@@ -439,6 +453,30 @@ test "tokenizer - keywords vs identifiers" {
     try expectToken(&t, .true, "true");
     try expectToken(&t, .at_sign, "@");
     try expectToken(&t, .identifier, "cast");
+}
+
+test "tokenizer - os keywords" {
+    const source =
+        \\ export linksection(".ram_text")
+        \\ const fast_handler = fn() void {};
+    ;
+    var t = Tokenizer.init(source);
+
+    try expectToken(&t, .@"export", "export");
+    try expectToken(&t, .@"linksection", "linksection");
+    try expectToken(&t, .l_paren, "(");
+    try expectToken(&t, .string_literal, "\".ram_text\"");
+    try expectToken(&t, .r_paren, ")");
+    try expectToken(&t, .@"const", "const");
+    try expectToken(&t, .identifier, "fast_handler");
+    try expectToken(&t, .equal, "=");
+    try expectToken(&t, .@"fn", "fn");
+    try expectToken(&t, .l_paren, "(");
+    try expectToken(&t, .r_paren, ")");
+    try expectToken(&t, .identifier, "void");
+    try expectToken(&t, .l_brace, "{");
+    try expectToken(&t, .r_brace, "}");
+    try expectToken(&t, .semicolon, ";");
 }
 
 // Helper function to keep tests clean

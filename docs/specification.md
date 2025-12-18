@@ -104,3 +104,37 @@ Memory layout tailored for the **Gowin GW2AR-LV18 FPGA**, respecting BRAM and SD
 - Heap Start: `0x8010_0000`
 - Initial Stack Top: `0x807F_FFFF`
 
+---
+
+## 4. OS Development Features
+To support robust kernel development, the language includes:
+
+### Resource Management
+`defer` and `errdefer` ensure cleanup logic runs when scopes exit, which is critical for locks and interrupts.
+
+```zig
+const guarded_op = fn() !void {
+    spinlock.acquire();
+    defer spinlock.release();
+
+    // If this fails, lock is still released
+    const data = read_hardware().!; 
+};
+```
+
+### Directives & Layout
+Fine-grained control over memory placement and alignment.
+
+```zig
+// Force alignment for hardware requirements
+var ivt: [256]u32 align(1024) = undefined;
+
+// Place code in specific sections (e.g., to run from RAM)
+export linksection(".ram_text") 
+const fast_handler = fn() void {
+    // ...
+};
+
+// External assembly linkage
+extern const _stack_start: u32;
+```
