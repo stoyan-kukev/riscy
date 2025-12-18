@@ -1,5 +1,5 @@
 const std = @import("std");
-const Tokenizer = @import("tokenizer.zig").Tokenizer;
+const Parser = @import("parser.zig").Parser;
 
 pub fn main() !void {
     var da: std.heap.DebugAllocator(.{}) = .{};
@@ -16,13 +16,9 @@ pub fn main() !void {
         const source = try std.fs.cwd().readFileAlloc(args[1], allocator, .unlimited);
         defer allocator.free(source);
 
-        var tokenizer: Tokenizer = .init(source);
-        var tokens = try tokenizer.tokenize(allocator);
-        defer tokens.deinit(allocator);
-
-        for (tokens.items) |token| {
-            std.debug.print("{f}\n", .{token});
-        }
+        var parser: Parser = try .init(allocator, source);
+        const program_ast = try parser.parseProgram();
+        _ = program_ast;
     }
 }
 

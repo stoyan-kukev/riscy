@@ -26,7 +26,7 @@ pub const Statement = union(enum) {
 pub const Declaration = struct {
     pub_token: ?Token,
     extern_export_token: ?Token, // extern or export
-    @"linksection": ?Token, // string_literal token
+    link_section_token: ?Token, // string_literal token
     const_var_token: Token,
     name: Token,
     type_expr: ?*TypeExpr,
@@ -94,7 +94,7 @@ pub const TypeCore = union(enum) {
 };
 
 pub const ArrayType = struct {
-    size: Token, // int_literal
+    size: *Expression,
     child_type: *TypeExpr,
 };
 
