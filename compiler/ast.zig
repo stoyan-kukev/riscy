@@ -195,6 +195,8 @@ pub const PrimaryExpr = union(enum) {
     builtin_call: *BuiltinCall,
     asm_block: *AsmBlock,
     struct_init: *StructInit,
+    type_expr: *TypeExpr,
+    enum_literal: Token, // .Idle
 };
 
 pub const FunctionLiteral = struct {
@@ -227,6 +229,7 @@ pub const AsmConstraints = struct {
 };
 
 pub const StructInit = struct {
+    type_expr: ?*Expression, // T{...} or null for .{...}
     fields: []const *FieldInit,
 };
 

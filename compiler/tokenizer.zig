@@ -79,6 +79,7 @@ pub const Token = struct {
         comma,
         dot,
         ellipsis,
+        arrow,
 
         // Operators
         equal,
@@ -194,7 +195,11 @@ pub const Tokenizer = struct {
             '%' => return self.makeToken(.percent),
 
             '!' => return self.makeToken(if (self.match('=')) .bang_equal else .bang),
-            '=' => return self.makeToken(if (self.match('=')) .double_equal else .equal),
+            '=' => {
+                if (self.match('=')) return self.makeToken(.double_equal);
+                if (self.match('>')) return self.makeToken(.arrow);
+                return self.makeToken(.equal);
+            },
             '^' => return self.makeToken(.caret),
             '~' => return self.makeToken(.tilde),
             '?' => return self.makeToken(.question_mark),
@@ -234,7 +239,7 @@ pub const Tokenizer = struct {
         // Hex detection: 0x...
         if (self.source[self.start_index] == '0' and self.peek() == 'x') {
             _ = self.advance(); // consume 'x'
-            while (isHex(self.peek())) {
+            while (isHex(self.peek()) or self.peek() == '_') {
                 _ = self.advance();
             }
             return self.makeToken(.int_literal);
@@ -243,14 +248,14 @@ pub const Tokenizer = struct {
         // Binary detection: 0b...
         if (self.source[self.start_index] == '0' and self.peek() == 'b') {
             _ = self.advance(); // consume 'b'
-            while (isBinary(self.peek())) {
+            while (isBinary(self.peek()) or self.peek() == '_') {
                 _ = self.advance();
             }
             return self.makeToken(.int_literal);
         }
 
         // Decimal
-        while (isDigit(self.peek())) {
+        while (isDigit(self.peek()) or self.peek() == '_') {
             _ = self.advance();
         }
 

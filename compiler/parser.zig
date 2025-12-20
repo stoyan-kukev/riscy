@@ -58,7 +58,7 @@ pub const Parser = struct {
 
                 .asterisk, .slash, .percent => .factor,
 
-                .l_paren, .l_bracket, .dot => .call,
+                .l_paren, .l_bracket, .l_brace, .dot => .call,
 
                 else => .lowest,
             };
@@ -107,7 +107,13 @@ pub const Parser = struct {
     fn parseDeclaration(self: *Parser) Parser.Error!*Ast.Declaration {
         const pub_token = if (try self.match(&.{.@"pub"})) self.previous else null;
         const extern_export_token = if (try self.match(&.{.@"export"}) or try self.match(&.{.@"extern"})) self.previous else null;
-        const link_section_token = if (try self.match(&.{.@"linksection"})) self.previous else null;
+
+        var link_section_token: ?Token = null;
+        if (try self.match(&.{.@"linksection"})) {
+            try self.consume(.l_paren, "Expected '(' after 'linksection'.");
+            link_section_token = try self.consumeReturn(.string_literal, "Expected string literal for linksection.");
+            try self.consume(.r_paren, "Expected ')' after linksection string.");
+        }
 
         if (!try self.match(&.{.@"var"}) and !try self.match(&.{.@"const"})) {
             return self.parseError("Expected 'var' or 'const'.");
@@ -145,7 +151,9 @@ pub const Parser = struct {
 
         while (true) {
             if (try self.match(&.{.asterisk})) {
-                try prefixes.append(allocator, .{ .pointer = self.previous.? });
+                const star = self.previous.?;
+                const volatile_token = if (try self.match(&.{.@"volatile"})) self.previous.? else null;
+                try prefixes.append(allocator, .{ .pointer = .{ .star_token = star, .volatile_token = volatile_token } });
             } else if (try self.match(&.{.question_mark})) {
                 try prefixes.append(allocator, .{ .optional = self.previous.? });
             } else if (try self.match(&.{.bang})) {
@@ -153,7 +161,10 @@ pub const Parser = struct {
             } else if (try self.match(&.{.l_bracket})) {
                 if (try self.match(&.{.asterisk})) {
                     try self.consume(.r_bracket, "Expected ']' after '[*'.");
-                    try prefixes.append(allocator, .{ .many_pointer = self.previous.? });
+                    const many_star = self.previous.?;
+                    const volatile_token = if (try self.match(&.{.@"volatile"})) self.previous.? else null;
+
+                    try prefixes.append(allocator, .{ .many_pointer = .{ .star_token = many_star, .volatile_token = volatile_token } });
                 } else {
                     // If we are here then the type started with '[', which means it's an array size we're parsing
                     const size_expr = try self.parseExpression();
@@ -183,12 +194,86 @@ pub const Parser = struct {
             .{ .enum_def = try self.parseEnum() }
         else if (try self.match(&.{.@"union"}))
             .{ .union_def = try self.parseUnion() }
+        else if (try self.match(&.{.@"fn"}))
+            .{ .fn_type = try self.parseFnType() }
         else
             return self.parseError("Expected type.");
 
         return try self.create(Ast.TypeExpr, .{
             .prefixes = try prefixes.toOwnedSlice(allocator),
             .core = core,
+        });
+    }
+
+    fn parseFnType(self: *Parser) !*Ast.FunctionType {
+        const allocator = self.arena.allocator();
+        try self.consume(.l_paren, "Expected '(' after 'fn' in type.");
+
+        var params: std.ArrayList(*Ast.Param) = .empty;
+
+        if (!self.check(&.{.r_paren})) {
+            while (true) {
+                // In function types, parameter names are optional in some langs, but required in ours per grammar?
+                // Grammar says: param = identifier , ":" , type_expr;
+                // So names are required.
+                const name = try self.consumeReturn(.identifier, "Expected parameter name.");
+                try self.consume(.colon, "Expected ':' after paramater name.");
+                const type_expr = try self.parseTypeExpr();
+
+                const param = try self.create(Ast.Param, .{
+                    .name = name,
+                    .type_expr = type_expr,
+                });
+                try params.append(allocator, param);
+
+                if (!try self.match(&.{.comma})) break;
+            }
+        }
+        try self.consume(.r_paren, "Expected ')' after parameters.");
+
+        const return_type = try self.parseTypeExpr();
+
+        return self.create(Ast.FunctionType, .{
+            .params = try params.toOwnedSlice(allocator),
+            .return_type = return_type,
+        });
+    }
+
+    fn parseUnion(self: *Parser) !*Ast.UnionDef {
+        const allocator = self.arena.allocator();
+        const keyword = self.previous.?;
+
+        try self.consume(.l_brace, "Expected '{' before union body.");
+
+        var members: std.ArrayList(*Ast.ContainerDecl) = .empty;
+        while (!self.check(&.{ .r_brace, .eof })) {
+            if (self.check(&.{ .@"pub", .@"const", .@"var", .@"extern", .@"export" })) {
+                const decl = try self.parseDeclaration();
+                const container_node = try self.create(Ast.ContainerDecl, .{ .declaration = decl });
+                try members.append(allocator, container_node);
+            } else {
+                const name = try self.consumeReturn(.identifier, "Expected field name or declaration.");
+                try self.consume(.colon, "Expected ':' after field name.");
+                const type_expr = try self.parseTypeExpr();
+
+                // Commas are required
+                if (!try self.match(&.{.comma})) return self.parseError("Expected comma after field declaration.");
+
+                const field = try self.create(Ast.FieldDecl, .{
+                    .name = name,
+                    .type_expr = type_expr,
+                });
+
+                const container_node = try self.create(Ast.ContainerDecl, .{ .field = field });
+                try members.append(allocator, container_node);
+            }
+        }
+
+        try self.consume(.r_brace, "Expected '}' after union body.");
+
+        return try self.create(Ast.UnionDef, .{
+            .keyword = keyword,
+            .members = try members.toOwnedSlice(allocator),
         });
     }
 
@@ -215,7 +300,7 @@ pub const Parser = struct {
 
     fn parsePrefix(self: *Parser) !*Ast.Expression {
         // Unary operators
-        if (try self.match(&.{ .minus, .not, .bang, .tilde, .ampersand, .asterisk })) {
+        if (try self.match(&.{ .minus, .not, .bang, .tilde, .ampersand })) {
             const op = self.previous.?;
             const right = try self.parsePrecedence(.unary);
 
@@ -227,6 +312,21 @@ pub const Parser = struct {
             return self.create(Ast.Expression, .{ .unary = unary_node });
         }
 
+        // Pointer Type (*T, *volatile T)
+        if (self.check(&.{.asterisk})) {
+            const type_expr = try self.parseTypeExpr();
+            const primary = try self.create(Ast.PrimaryExpr, .{ .type_expr = type_expr });
+            return self.create(Ast.Expression, .{ .primary = primary });
+        }
+
+        // Array/Slice Type ([]T, [N]T, [*]T)
+        // parseTypeExpr handles l_bracket start.
+        if (self.check(&.{.l_bracket})) {
+            const type_expr = try self.parseTypeExpr();
+            const primary = try self.create(Ast.PrimaryExpr, .{ .type_expr = type_expr });
+            return self.create(Ast.Expression, .{ .primary = primary });
+        }
+
         // Grouping
         if (try self.match(&.{.l_paren})) {
             const expr = try self.parseExpression();
@@ -234,6 +334,25 @@ pub const Parser = struct {
             const primary = try self.create(Ast.PrimaryExpr, .{ .grouped = expr });
 
             return self.create(Ast.Expression, .{ .primary = primary });
+        }
+
+        // Struct Init (.{}) OR Enum Literal (.Identifier)
+        if (try self.match(&.{.dot})) {
+            if (try self.match(&.{.l_brace})) {
+                // Struct Init (Anonymous)
+                const fields = try self.parseFieldInits();
+                const struct_init = try self.create(Ast.StructInit, .{
+                    .type_expr = null,
+                    .fields = fields,
+                });
+                const primary = try self.create(Ast.PrimaryExpr, .{ .struct_init = struct_init });
+                return self.create(Ast.Expression, .{ .primary = primary });
+            } else if (try self.match(&.{.identifier})) {
+                // Enum Literal
+                const primary = try self.create(Ast.PrimaryExpr, .{ .enum_literal = self.previous.? });
+                return self.create(Ast.Expression, .{ .primary = primary });
+            }
+            return self.parseError("Expected '{' or identifier after '.'");
         }
 
         // Primary expressions
@@ -252,10 +371,99 @@ pub const Parser = struct {
             return self.create(Ast.Expression, .{ .primary = primary });
         }
 
-        // Function Literals
+        // Function Literals OR Function Types
         if (try self.match(&.{.@"fn"})) {
-            const fn_literal = try self.parseFnLiteral();
-            const primary = try self.create(Ast.PrimaryExpr, .{ .fn_literal = fn_literal });
+            // We need to look ahead to see if it's a literal or a type
+            // fn(params) return_type { body } -> Literal
+            // fn(params) return_type -> Type
+            // Also fn.naked ...
+
+            // Re-using parseFnLiteral logic partly?
+            // parseFnLiteral parses body. parseFnType does not.
+            // Let's manually parse the common prefix.
+
+            const allocator = self.arena.allocator();
+            var attribute: ?Token = null;
+            if (try self.match(&.{.dot})) {
+                if (self.check(&.{ .naked, .interrupt })) {
+                    try self.advance();
+                    attribute = self.previous;
+                } else {
+                    return self.parseError("Expected function attribute (naked/interrupt) after 'fn.'.");
+                }
+            }
+            try self.consume(.l_paren, "Expected '(' after 'fn'.");
+
+            var params: std.ArrayList(*Ast.Param) = .empty;
+
+            if (!self.check(&.{.r_paren})) {
+                while (true) {
+                    const name = try self.consumeReturn(.identifier, "Expected parameter name.");
+                    try self.consume(.colon, "Expected ':' after paramater name.");
+                    const type_expr = try self.parseTypeExpr();
+
+                    const param = try self.create(Ast.Param, .{
+                        .name = name,
+                        .type_expr = type_expr,
+                    });
+                    try params.append(allocator, param);
+
+                    if (!try self.match(&.{.comma})) break;
+                }
+            }
+            try self.consume(.r_paren, "Expected ')' after parameters.");
+
+            const return_type = try self.parseTypeExpr();
+
+            if (self.check(&.{.l_brace})) {
+                // It is a Function Literal with a Body
+                const body = try self.parseBlock();
+                const fn_literal = try self.create(Ast.FunctionLiteral, .{
+                    .attribute = attribute,
+                    .params = try params.toOwnedSlice(allocator),
+                    .return_type = return_type,
+                    .body = body,
+                });
+                const primary = try self.create(Ast.PrimaryExpr, .{ .fn_literal = fn_literal });
+                return self.create(Ast.Expression, .{ .primary = primary });
+            } else {
+                // It is a Function Type
+                if (attribute != null) return self.parseError("Function types cannot have attributes like .naked yet.");
+
+                const fn_type = try self.create(Ast.FunctionType, .{
+                    .params = try params.toOwnedSlice(allocator),
+                    .return_type = return_type,
+                });
+
+                // Wrap in TypeExpr -> PrimaryExpr
+                const type_expr = try self.create(Ast.TypeExpr, .{
+                    .prefixes = &.{}, // No prefixes for bare fn type
+                    .core = .{ .fn_type = fn_type },
+                });
+
+                const primary = try self.create(Ast.PrimaryExpr, .{ .type_expr = type_expr });
+                return self.create(Ast.Expression, .{ .primary = primary });
+            }
+        }
+
+        // Structs, Enums, Unions as Expressions (Types)
+        if (self.check(&.{ .@"struct", .@"enum", .@"union" })) {
+            const type_expr = try self.parseTypeExpr();
+            const primary = try self.create(Ast.PrimaryExpr, .{ .type_expr = type_expr });
+            return self.create(Ast.Expression, .{ .primary = primary });
+        }
+
+        // Asm Block
+        if (try self.match(&.{.@"asm"})) {
+            const asm_node = try self.parseAsmBlock();
+            const primary = try self.create(Ast.PrimaryExpr, .{ .asm_block = asm_node });
+            return self.create(Ast.Expression, .{ .primary = primary });
+        }
+
+        // Builtin Call
+        if (try self.match(&.{.at_sign})) {
+            const builtin = try self.parseBuiltinCall();
+            const primary = try self.create(Ast.PrimaryExpr, .{ .builtin_call = builtin });
             return self.create(Ast.Expression, .{ .primary = primary });
         }
 
@@ -296,6 +504,18 @@ pub const Parser = struct {
                 });
 
                 return self.create(Ast.Expression, .{ .index = index_node });
+            },
+            // Struct Initialization with Type (T { ... })
+            .l_brace => {
+                const fields = try self.parseFieldInits();
+
+                const struct_init = try self.create(Ast.StructInit, .{
+                    .type_expr = left,
+                    .fields = fields,
+                });
+
+                const primary = try self.create(Ast.PrimaryExpr, .{ .struct_init = struct_init });
+                return self.create(Ast.Expression, .{ .primary = primary });
             },
             // Dot access (foo.bar, foo.*, foo.!, foo.?)
             .dot => {
@@ -446,6 +666,107 @@ pub const Parser = struct {
         });
     }
 
+    fn parseAsmBlock(self: *Parser) !*Ast.AsmBlock {
+        const keyword = self.previous.?;
+        var is_pure = false;
+
+        if (try self.match(&.{.dot})) {
+            const attr = try self.consumeReturn(.identifier, "Expected 'pure' after 'asm.'.");
+            if (!std.mem.eql(u8, attr.lexeme(self.source), "pure")) {
+                return self.parseError("Expected 'pure' attribute.");
+            }
+            is_pure = true;
+        }
+
+        try self.consume(.l_brace, "Expected '{' after asm.");
+        const template = try self.consumeReturn(.string_literal, "Expected assembly template string.");
+
+        var constraints: ?Ast.AsmConstraints = null;
+        if (try self.match(&.{.colon})) {
+            // Check if there is a string literal, otherwise assume empty
+            var output: Token = undefined;
+            if (self.check(&.{.string_literal})) {
+                output = try self.consumeReturn(.string_literal, "Expected output constraints string.");
+            } else {
+                // Create a fake empty string token or just handle it.
+                // For now, let's assume if it's not a string, it's empty constraints?
+                // But we need a Token for AST.
+                // Let's just expect it if present.
+                // If the user wrote `: :`, then after the first colon we have another colon.
+                // So we check if the next token is NOT a colon.
+                if (self.check(&.{.colon}) or self.check(&.{.r_brace})) {
+                    // Empty output constraint.
+                    // We need a dummy token? Or change AST to optional Token.
+                    // Changing AST is annoying now. Let's return the Previous token (the colon) but mark it?
+                    // Or just use the colon token as a placeholder for "empty string".
+                    output = self.previous.?;
+                } else {
+                    output = try self.consumeReturn(.string_literal, "Expected output constraints string.");
+                }
+            }
+
+            var input: ?Token = null;
+            if (try self.match(&.{.colon})) {
+                if (self.check(&.{.string_literal})) {
+                    input = try self.consumeReturn(.string_literal, "Expected input constraints string.");
+                }
+            }
+            constraints = .{ .output = output, .input = input };
+        }
+
+        try self.consume(.r_brace, "Expected '}' after asm block.");
+
+        return self.create(Ast.AsmBlock, .{
+            .keyword = keyword,
+            .is_pure = is_pure,
+            .template = template,
+            .constraints = constraints,
+        });
+    }
+
+    fn parseBuiltinCall(self: *Parser) !*Ast.BuiltinCall {
+        const allocator = self.arena.allocator();
+        const name = try self.consumeReturn(.identifier, "Expected builtin identifier after '@'.");
+
+        try self.consume(.l_paren, "Expected '(' after builtin name.");
+
+        var args: std.ArrayList(*Ast.Expression) = .empty;
+        if (!self.check(&.{.r_paren})) {
+            while (true) {
+                try args.append(allocator, try self.parseExpression());
+                if (!try self.match(&.{.comma})) break;
+            }
+        }
+
+        try self.consume(.r_paren, "Expected ')' after builtin arguments.");
+
+        return self.create(Ast.BuiltinCall, .{
+            .name = name,
+            .args = try args.toOwnedSlice(allocator),
+        });
+    }
+
+    fn parseFieldInits(self: *Parser) ![]const *Ast.FieldInit {
+        const allocator = self.arena.allocator();
+        var fields: std.ArrayList(*Ast.FieldInit) = .empty;
+
+        while (!self.check(&.{ .r_brace, .eof })) {
+            try self.consume(.dot, "Expected '.' before field name.");
+            const name = try self.consumeReturn(.identifier, "Expected field name.");
+            try self.consume(.equal, "Expected '=' after field name.");
+            const value = try self.parseExpression();
+            try self.consume(.comma, "Expected ',' after field initialization.");
+
+            const field = try self.create(Ast.FieldInit, .{
+                .name = name,
+                .value = value,
+            });
+            try fields.append(allocator, field);
+        }
+        try self.consume(.r_brace, "Expected '}' after struct initialization.");
+        return try fields.toOwnedSlice(allocator);
+    }
+
     fn parseBlock(self: *Parser) Parser.Error!*Ast.Block {
         const allocator = self.arena.allocator();
 
@@ -572,6 +893,112 @@ pub const Parser = struct {
         return self.create(Ast.Statement, .{ .defer_stmt = defer_node });
     }
 
+    fn parseForStatement(self: *Parser) !*Ast.Statement {
+        try self.consume(.l_paren, "Expected '(' after 'for'.");
+
+        // Init: declaration or expression statement or empty (;)
+        var init_stmt: ?*Ast.Statement = null;
+        if (!try self.match(&.{.semicolon})) {
+            if (self.check(&.{ .@"var", .@"const" })) {
+                const decl = try self.parseDeclaration();
+                init_stmt = try self.create(Ast.Statement, .{ .declaration = decl });
+            } else {
+                const expr = try self.parseExpression();
+                try self.consume(.semicolon, "Expected ';' after initializer.");
+                init_stmt = try self.create(Ast.Statement, .{ .expression = expr });
+            }
+        }
+
+        // Condition
+        var condition: ?*Ast.Expression = null;
+        if (!try self.match(&.{.semicolon})) {
+            condition = try self.parseExpression();
+            try self.consume(.semicolon, "Expected ';' after condition.");
+        }
+
+        // Post
+        var post: ?*Ast.Expression = null;
+        if (!self.check(&.{.r_paren})) {
+            post = try self.parseExpression();
+        }
+
+        try self.consume(.r_paren, "Expected ')' after for clauses.");
+
+        const body = try self.parseBlock();
+
+        const for_node = try self.create(Ast.ForStmt, .{
+            .init = init_stmt,
+            .condition = condition,
+            .post = post,
+            .body = body,
+        });
+
+        return self.create(Ast.Statement, .{ .for_stmt = for_node });
+    }
+
+    fn parseSwitchStatement(self: *Parser) !*Ast.Statement {
+        const allocator = self.arena.allocator();
+        try self.consume(.l_paren, "Expected '(' after 'switch'.");
+        const condition = try self.parseExpression();
+        try self.consume(.r_paren, "Expected ')' after switch condition.");
+        try self.consume(.l_brace, "Expected '{' to start switch body.");
+
+        var prongs: std.ArrayList(*Ast.SwitchProng) = .empty;
+
+        while (!self.check(&.{ .r_brace, .eof })) {
+            var items: std.ArrayList(Ast.SwitchItem) = .empty;
+            var is_else = false;
+
+            if (try self.match(&.{.@"else"})) {
+                is_else = true;
+            } else {
+                while (true) {
+                    const start_expr = try self.parseExpression();
+
+                    if (try self.match(&.{.ellipsis})) {
+                        const end_expr = try self.parseExpression();
+                        const range = try self.create(Ast.SwitchRange, .{
+                            .start = start_expr,
+                            .end = end_expr,
+                        });
+                        try items.append(allocator, .{ .range = range });
+                    } else {
+                        try items.append(allocator, .{ .expression = start_expr });
+                    }
+
+                    if (!try self.match(&.{.comma})) break;
+                }
+            }
+
+            try self.consume(.arrow, "Expected '=>' after switch patterns.");
+
+            const body: *Ast.Statement = if (self.check(&.{.l_brace}))
+                try self.create(Ast.Statement, .{ .block = try self.parseBlock() })
+            else
+                try self.parseStatement();
+
+            // Optional comma after statement
+            _ = try self.match(&.{.comma});
+
+            const prong = try self.create(Ast.SwitchProng, .{
+                .items = try items.toOwnedSlice(allocator),
+                .is_else = is_else,
+                .body = body,
+            });
+
+            try prongs.append(allocator, prong);
+        }
+
+        try self.consume(.r_brace, "Expected '}' after switch body.");
+
+        const switch_node = try self.create(Ast.SwitchStmt, .{
+            .condition = condition,
+            .prongs = try prongs.toOwnedSlice(allocator),
+        });
+
+        return self.create(Ast.Statement, .{ .switch_stmt = switch_node });
+    }
+
     fn parseEnum(self: *Parser) !*Ast.EnumDef {
         const allocator = self.arena.allocator();
 
@@ -600,18 +1027,6 @@ pub const Parser = struct {
             .backing_type = backing_type,
             .members = try members.toOwnedSlice(allocator),
         });
-    }
-
-    fn parseUnion(self: *Parser) !*Ast.UnionDef {
-        return self.parseError("Unions not implemented yet.");
-    }
-
-    fn parseForStatement(self: *Parser) !*Ast.Statement {
-        return self.parseError("For loops not implemented yet.");
-    }
-
-    fn parseSwitchStatement(self: *Parser) !*Ast.Statement {
-        return self.parseError("Switch not implemented yet.");
     }
 
     fn advance(self: *Parser) !void {

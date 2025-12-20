@@ -1,7 +1,87 @@
+// 1. Top-Level Declarations & Builtins
+const UART_BASE = 0x1000_0000;
+extern const _stack_start: u32;
+
+// 2. Structs (Packed)
+const Registers = struct.packed {
+    ra: u32,
+    sp: u32,
+    gp: u32,
+    pc: u32,
+};
+
+// 3. Enums
+const State = enum(u8) {
+    Idle,
+    Running,
+    Error,
+};
+
+// 4. Unions
+const Payload = union {
+    data: [64]u8,
+    code: u32,
+};
+
+// 5. Function Types (New Feature)
+const InterruptHandler = fn(irq: u32) void;
+
+// 6. Function Attributes & Asm Blocks
+export linksection(".text.init")
+const start = fn.naked() void {
+    asm.pure {
+        "la sp, _stack_start"
+        : :
+    };
+};
+
 pub const main = fn() !void {
-	var x: u32 = 0xFF;
-	while (x < 0xFFF) {
-		x += 1;
-	}
-	x += 150;
+    // 7. Volatile Pointers (New Feature)
+    var uart: *volatile u8 = @cast(*volatile u8, UART_BASE);
+
+    var pages: [*]volatile u8 = @cast([*]volatile u8, UART_BASE);
+
+    // 8. For Loops (New Feature)
+    for (var i: u32 = 0; i < 100; i = i + 1) {
+        if (i == 50) { continue; }
+
+        // 9. Builtin Calls
+        @atomic_store(uart, i);
+    }
+
+    // 10. Switch with Ranges (New Feature)
+    var s: State = .Idle;
+    switch (s) {
+        .Idle => {
+            uart.* = 0x00;
+        },
+        .Running => {
+            uart.* = 0x01;
+        },
+        // Range syntax
+        0x10 ... 0x20 => {
+            uart.* = 0xFF;
+        },
+        else => { break; },
+    }
+
+    // 11. Defer & Errdefer
+    defer {
+        uart.* = 0;
+    }
+
+    // 12. Error Propagation (postfix '!')
+    const val = get_status().!;
+
+    // 13. Struct Initialization
+    const regs = Registers {
+        .ra = 0,
+        .sp = 0,
+        .gp = 0,
+        .pc = 0x8000_0000,
+    };
+};
+
+const get_status = fn() !u32 {
+    return 0;
 };
