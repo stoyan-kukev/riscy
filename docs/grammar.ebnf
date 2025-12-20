@@ -49,7 +49,9 @@ switch_stmt = "switch" , "(" , expression , ")" , "{" , { switch_prong } , "}";
 
 switch_prong = switch_patterns , "=>" , ( statement | block ) , ",";
 switch_patterns = "else"
-                | expression , { "," , expression };
+                | switch_item , { "," , switch_item };
+
+switch_item = expression , [ "..." , expression ];
 
 /* ==========================================================================
    4. TYPES
@@ -57,13 +59,14 @@ switch_patterns = "else"
 type_expr = type_prefix , type_core;
 
 /* Recursive prefixes: *!?Node, *Node, [*]Node */
-type_prefix = { "*" | "?" | "!" | "[" , "*" , "]" };
+type_prefix = { "*" , [ "volatile" ] | "?" | "!" | "[" , "*" , "]" };
 
 type_core = identifier
           | struct_def
           | union_def
           | enum_def
-          | "[" , int_literal , "]" , type_expr; /* e.g. [N]u8 */
+          | "[" , int_literal , "]" , type_expr /* e.g. [N]u8 */
+          | "fn" , [ "." , identifier ] , "(" , [ param_list ] , ")" , type_expr;
 
 /* Structs: struct { ... } */
 struct_def = "struct" , [ "." , "packed" ] , "{" , { container_decl } , "}";
