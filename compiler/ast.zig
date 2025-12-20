@@ -89,15 +89,17 @@ pub const TypeExpr = struct {
 };
 
 pub const TypePrefix = union(enum) {
-    pointer: PointerPrefix, // *
+    pointer: PointerPrefix, // *T, ~T, [*]T, [~]T
     optional: Token, // ?
     error_union: Token, // !
-    many_pointer: PointerPrefix, // [*]
+    align_prefix: *Expression, // align(N)
 };
 
 pub const PointerPrefix = struct {
-    star_token: Token,
-    volatile_token: ?Token,
+    is_multi: bool, // true if [*] or [~]
+    is_volatile: bool, // true if ~ or [~]
+    allow_zero_token: ?Token, // allowzero
+    token: Token, // The *, ~, [, or ] token for location
 };
 
 pub const TypeCore = union(enum) {
@@ -119,14 +121,21 @@ pub const ArrayType = struct {
     child_type: *TypeExpr,
 };
 
+pub const StructLayout = enum {
+    auto,
+    @"packed",
+    c_abi,
+};
+
 pub const StructDef = struct {
     keyword: Token,
-    is_packed: bool,
+    layout: StructLayout,
     members: []const *ContainerDecl,
 };
 
 pub const UnionDef = struct {
     keyword: Token,
+    layout: StructLayout, // auto or c_abi
     members: []const *ContainerDecl,
 };
 
@@ -197,6 +206,9 @@ pub const PrimaryExpr = union(enum) {
     struct_init: *StructInit,
     type_expr: *TypeExpr,
     enum_literal: Token, // .Idle
+    bool_literal: Token, // true, false
+    null_literal: Token,
+    undefined_literal: Token,
 };
 
 pub const FunctionLiteral = struct {

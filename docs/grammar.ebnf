@@ -58,8 +58,11 @@ switch_item = expression , [ "..." , expression ];
    ========================================================================== */
 type_expr = type_prefix , type_core;
 
-/* Recursive prefixes: *!?Node, *Node, [*]Node */
-type_prefix = { "*" , [ "volatile" ] | "?" | "!" | "[" , "*" , "]" };
+/* Recursive prefixes: *T, ~T (volatile), ?T, !T, [*]T, [~]T, allowzero, align(N) */
+type_prefix = { pointer_prefix | "?" | "!" | multi_prefix | "allowzero" | "align" , "(" , expression , ")" };
+
+pointer_prefix = "*" | "~"; /* * = normal, ~ = volatile */
+multi_prefix   = "[" , ( "*" | "~" ) , "]";
 
 type_core = identifier
           | struct_def
@@ -68,11 +71,11 @@ type_core = identifier
           | "[" , int_literal , "]" , type_expr /* e.g. [N]u8 */
           | "fn" , [ "." , identifier ] , "(" , [ param_list ] , ")" , type_expr;
 
-/* Structs: struct { ... } */
-struct_def = "struct" , [ "." , "packed" ] , "{" , { container_decl } , "}";
+/* Structs: struct, struct.packed, struct.c_abi */
+struct_def = "struct" , [ "." , ( "packed" | "c_abi" ) ] , "{" , { container_decl } , "}";
 
-/* Unions: union { ... } (All fields at offset 0) */
-union_def = "union" , "{" , { container_decl } , "}";
+/* Unions: union, union.c_abi */
+union_def = "union" , [ "." , "c_abi" ] , "{" , { container_decl } , "}";
 
 /* Fields or Nested Decls */
 container_decl = field_decl

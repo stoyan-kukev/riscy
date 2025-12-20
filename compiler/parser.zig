@@ -125,7 +125,12 @@ pub const Parser = struct {
 
         const type_expr = if (try self.match(&.{.colon})) try self.parseTypeExpr() else null;
 
-        const align_expr = if (try self.match(&.{.@"align"})) try self.parseExpression() else null;
+        var align_expr: ?*Ast.Expression = null;
+        if (try self.match(&.{.@"align"})) {
+            try self.consume(.l_paren, "Expected '(' after 'align'.");
+            align_expr = try self.parseExpression();
+            try self.consume(.r_paren, "Expected ')' after alignment expression.");
+        }
 
         const init_expr = if (try self.match(&.{.equal})) try self.parseExpression() else null;
 
@@ -150,21 +155,61 @@ pub const Parser = struct {
         var prefixes: std.ArrayList(Ast.TypePrefix) = .empty;
 
         while (true) {
-            if (try self.match(&.{.asterisk})) {
-                const star = self.previous.?;
-                const volatile_token = if (try self.match(&.{.@"volatile"})) self.previous.? else null;
-                try prefixes.append(allocator, .{ .pointer = .{ .star_token = star, .volatile_token = volatile_token } });
+            if (try self.match(&.{.@"align"})) {
+                try self.consume(.l_paren, "Expected '(' after 'align'.");
+                const align_expr = try self.parseExpression();
+                try self.consume(.r_paren, "Expected ')' after alignment expression.");
+
+                try prefixes.append(allocator, .{ .align_prefix = align_expr });
+            } else if (try self.match(&.{.asterisk})) {
+                const token = self.previous.?;
+                const allow_zero = if (try self.match(&.{.@"allowzero"})) self.previous.? else null;
+                try prefixes.append(allocator, .{
+                    .pointer = .{
+                        .is_multi = false,
+                        .is_volatile = false,
+                        .allow_zero_token = allow_zero,
+                        .token = token,
+                    },
+                });
+            } else if (try self.match(&.{.tilde})) {
+                const token = self.previous.?;
+                const allow_zero = if (try self.match(&.{.@"allowzero"})) self.previous.? else null;
+                try prefixes.append(allocator, .{
+                    .pointer = .{
+                        .is_multi = false,
+                        .is_volatile = true,
+                        .allow_zero_token = allow_zero,
+                        .token = token,
+                    },
+                });
             } else if (try self.match(&.{.question_mark})) {
                 try prefixes.append(allocator, .{ .optional = self.previous.? });
             } else if (try self.match(&.{.bang})) {
                 try prefixes.append(allocator, .{ .error_union = self.previous.? });
             } else if (try self.match(&.{.l_bracket})) {
                 if (try self.match(&.{.asterisk})) {
+                    const token = self.previous.?;
                     try self.consume(.r_bracket, "Expected ']' after '[*'.");
-                    const many_star = self.previous.?;
-                    const volatile_token = if (try self.match(&.{.@"volatile"})) self.previous.? else null;
-
-                    try prefixes.append(allocator, .{ .many_pointer = .{ .star_token = many_star, .volatile_token = volatile_token } });
+                    const allow_zero = if (try self.match(&.{.@"allowzero"})) self.previous.? else null;
+                    try prefixes.append(allocator, .{ .pointer = .{
+                        .is_multi = true,
+                        .is_volatile = false,
+                        .allow_zero_token = allow_zero,
+                        .token = token,
+                    } });
+                } else if (try self.match(&.{.tilde})) {
+                    const token = self.previous.?;
+                    try self.consume(.r_bracket, "Expected ']' after '[~'.");
+                    const allow_zero = if (try self.match(&.{.@"allowzero"})) self.previous.? else null;
+                    try prefixes.append(allocator, .{
+                        .pointer = .{
+                            .is_multi = true,
+                            .is_volatile = true,
+                            .allow_zero_token = allow_zero,
+                            .token = token,
+                        },
+                    });
                 } else {
                     // If we are here then the type started with '[', which means it's an array size we're parsing
                     const size_expr = try self.parseExpression();
@@ -172,7 +217,6 @@ pub const Parser = struct {
 
                     const array_node = try self.create(Ast.ArrayType, .{
                         .size = size_expr,
-                        // recursively parse the child type
                         .child_type = try self.parseTypeExpr(),
                     });
 
@@ -243,6 +287,15 @@ pub const Parser = struct {
         const allocator = self.arena.allocator();
         const keyword = self.previous.?;
 
+        var layout: Ast.StructLayout = .auto;
+        if (try self.match(&.{.dot})) {
+            if (try self.match(&.{.c_abi})) {
+                layout = .c_abi;
+            } else {
+                return self.parseError("Expected 'c_abi' after 'union.'.");
+            }
+        }
+
         try self.consume(.l_brace, "Expected '{' before union body.");
 
         var members: std.ArrayList(*Ast.ContainerDecl) = .empty;
@@ -273,6 +326,7 @@ pub const Parser = struct {
 
         return try self.create(Ast.UnionDef, .{
             .keyword = keyword,
+            .layout = layout,
             .members = try members.toOwnedSlice(allocator),
         });
     }
@@ -300,7 +354,7 @@ pub const Parser = struct {
 
     fn parsePrefix(self: *Parser) !*Ast.Expression {
         // Unary operators
-        if (try self.match(&.{ .minus, .not, .bang, .tilde, .ampersand })) {
+        if (try self.match(&.{ .minus, .not, .bang, .ampersand })) {
             const op = self.previous.?;
             const right = try self.parsePrecedence(.unary);
 
@@ -312,14 +366,14 @@ pub const Parser = struct {
             return self.create(Ast.Expression, .{ .unary = unary_node });
         }
 
-        // Pointer Type (*T, *volatile T)
-        if (self.check(&.{.asterisk})) {
+        // Pointer Type (*T, ~T)
+        if (self.check(&.{ .asterisk, .tilde })) {
             const type_expr = try self.parseTypeExpr();
             const primary = try self.create(Ast.PrimaryExpr, .{ .type_expr = type_expr });
             return self.create(Ast.Expression, .{ .primary = primary });
         }
 
-        // Array/Slice Type ([]T, [N]T, [*]T)
+        // Array/Slice Type ([]T, [N]T, [*]T, [~]T)
         // parseTypeExpr handles l_bracket start.
         if (self.check(&.{.l_bracket})) {
             const type_expr = try self.parseTypeExpr();
@@ -371,17 +425,23 @@ pub const Parser = struct {
             return self.create(Ast.Expression, .{ .primary = primary });
         }
 
+        if (try self.match(&.{ .true, .false })) {
+            const primary = try self.create(Ast.PrimaryExpr, .{ .bool_literal = self.previous.? });
+            return self.create(Ast.Expression, .{ .primary = primary });
+        }
+
+        if (try self.match(&.{.null})) {
+            const primary = try self.create(Ast.PrimaryExpr, .{ .null_literal = self.previous.? });
+            return self.create(Ast.Expression, .{ .primary = primary });
+        }
+
+        if (try self.match(&.{.undefined})) {
+            const primary = try self.create(Ast.PrimaryExpr, .{ .undefined_literal = self.previous.? });
+            return self.create(Ast.Expression, .{ .primary = primary });
+        }
+
         // Function Literals OR Function Types
         if (try self.match(&.{.@"fn"})) {
-            // We need to look ahead to see if it's a literal or a type
-            // fn(params) return_type { body } -> Literal
-            // fn(params) return_type -> Type
-            // Also fn.naked ...
-
-            // Re-using parseFnLiteral logic partly?
-            // parseFnLiteral parses body. parseFnType does not.
-            // Let's manually parse the common prefix.
-
             const allocator = self.arena.allocator();
             var attribute: ?Token = null;
             if (try self.match(&.{.dot})) {
@@ -447,7 +507,7 @@ pub const Parser = struct {
         }
 
         // Structs, Enums, Unions as Expressions (Types)
-        if (self.check(&.{ .@"struct", .@"enum", .@"union" })) {
+        if (self.check(&.{ .@"struct", .@"enum", .@"union", .@"extern" })) {
             const type_expr = try self.parseTypeExpr();
             const primary = try self.create(Ast.PrimaryExpr, .{ .type_expr = type_expr });
             return self.create(Ast.Expression, .{ .primary = primary });
@@ -496,7 +556,7 @@ pub const Parser = struct {
             // Array indexing
             .l_bracket => {
                 const index = try self.parseExpression();
-                try self.consume(.r_paren, "Expected ']' after index.");
+                try self.consume(.r_bracket, "Expected ']' after index.");
 
                 const index_node = try self.create(Ast.IndexExpr, .{
                     .target = left,
@@ -577,10 +637,16 @@ pub const Parser = struct {
         const allocator = self.arena.allocator();
         const keyword = self.previous.?;
 
-        var is_packed = false;
+        var layout: Ast.StructLayout = .auto;
+
         if (try self.match(&.{.dot})) {
-            try self.consume(.@"packed", "Expected 'packed' after 'struct.'.");
-            is_packed = true;
+            if (try self.match(&.{.@"packed"})) {
+                layout = .@"packed";
+            } else if (try self.match(&.{.c_abi})) {
+                layout = .c_abi;
+            } else {
+                return self.parseError("Expected 'packed' or 'c_abi' after 'struct.'.");
+            }
         }
 
         try self.consume(.l_brace, "Expected '{' before struct body.");
@@ -616,7 +682,7 @@ pub const Parser = struct {
 
         return try self.create(Ast.StructDef, .{
             .keyword = keyword,
-            .is_packed = is_packed,
+            .layout = layout,
             .members = try members.toOwnedSlice(allocator),
         });
     }

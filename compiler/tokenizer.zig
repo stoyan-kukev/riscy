@@ -56,6 +56,8 @@ pub const Token = struct {
         // Contextual Modifiers
         @"packed",
         @"volatile",
+        @"allowzero",
+        c_abi,
         naked,
         interrupt,
         @"align",
@@ -395,7 +397,8 @@ pub const Tokenizer = struct {
         .{ "or", .@"or" },
         .{ "not", .not },
         .{ "packed", .@"packed" },
-        .{ "volatile", .@"volatile" },
+        .{ "allowzero", .@"allowzero" },
+        .{ "c_abi", .c_abi },
         .{ "naked", .naked },
         .{ "interrupt", .interrupt },
         .{ "align", .@"align" },
