@@ -143,8 +143,17 @@ param = identifier , ":" , type_expr;
 
 arg_list = expression , { "," , expression };
 
-asm_block = "asm" , [ "." , "pure" ] , "{" , string_literal , [ asm_constraints ] , "}";
-asm_constraints = ":" , string_literal , [ ":" , string_literal ];
+asm_block = "asm" , [ "." , "pure" ] , "{" , asm_template , [ asm_outputs , [ asm_inputs , [ asm_clobbers ] ] ] , "}";
+
+asm_template = string_literal
+             | multiline_string_literal , { multiline_string_literal };
+
+asm_outputs = ":" , [ asm_operand_list ];
+asm_inputs  = ":" , [ asm_operand_list ];
+asm_clobbers = ":" , [ string_literal , { "," , string_literal } ];
+
+asm_operand_list = asm_operand , { "," , asm_operand };
+asm_operand = "[" , identifier , "]" , string_literal , "(" , expression , ")";
 
 builtin_call = "@" , identifier , "(" , [ arg_list ] , ")";
 
