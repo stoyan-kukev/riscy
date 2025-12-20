@@ -1,5 +1,99 @@
 const std = @import("std");
 
+// --- Structs & Enums & Unions ---
+
+const Point = struct {
+    x: u32,
+    y: u32,
+};
+
+const Color = enum(u8) {
+    Red,
+    Green,
+    Blue,
+};
+
+const Number = union {
+    int: u32,
+    float: u32, // Treating as bits
+};
+
+const Registers = struct.packed {
+    ra: u32,
+    sp: u32,
+};
+
+// --- Global Variables with Attributes ---
+
+// "OS" features: Export to specific link section
+export linksection(".data")
+var global_counter: u32 = 0;
+
+// Alignment
+var buffer: [256]u8 align(16) = undefined;
+
+// --- Control Flow & Logic ---
+
+const controlFlowDemo = fn(limit: u32) !u32 {
+    var sum: u32 = 0;
+    var i: u32 = 0;
+
+    // While loop
+    while (i < limit) {
+        sum = sum + i;
+        i = i + 1;
+        if (sum > 100) break;
+    }
+
+    // C-style For loop
+    for (var j: u32 = 0; j < 5; j = j + 1) {
+        if (j == 2) continue;
+        sum = sum + j;
+    }
+
+    // Defer execution
+    defer { std.debug.print("Exiting controlFlowDemo, sum={}\n", sum); }
+
+    // Switch statement
+    const color: Color = .Green;
+    switch (color) {
+        .Red => std.debug.print("It is Red\n", 0),
+        .Green => std.debug.print("It is Green\n", 0),
+        else => std.debug.print("It is Blue\n", 0),
+    }
+
+    // Error handling with return
+    if (sum == 0) return error.NoSum;
+
+    return sum;
+};
+
+// --- Pointers & Optionals ---
+
+const pointerDemo = fn() void {
+    var val: u32 = 123;
+    const ptr: *u32 = &val;
+
+    // Dereference
+    ptr.* = 456;
+
+    // Optional
+    var maybe_val: ?u32 = null;
+    if (maybe_val == null) {
+        maybe_val = 10;
+    }
+    // Unwrap optional (panic if null)
+    const unwrapped = maybe_val.?;
+
+    // Volatile pointer (simulating MMIO)
+    const vptr = @cast(~u32, 0x1000);
+    // vptr.*
+
+    std.debug.print("Pointer val: {}, Unwrapped: \n", val, unwrapped);
+};
+
+// --- Complex Assembly (from previous test) ---
+
 pub const atomicCompareAndSwap = fn(ptr: *u32, old: u32, new: u32) bool {
     var loaded: u32 = 0;
     var sc_res: u32 = 0;
@@ -28,8 +122,22 @@ pub const atomicCompareAndSwap = fn(ptr: *u32, old: u32, new: u32) bool {
     return ok != 0;
 };
 
+// --- Main Entry ---
 pub const main = fn() !void {
+    std.debug.print("--- Starting Riscy Test ---\\n", 0);
+
+    // Struct Initialization
+    const p: Point = .{ .x = 10, .y = 20 };
+    std.debug.print("Struct Point: x={}, y=\\n", p.x, p.y);
+
+    pointerDemo();
+
+    // Error Union Unwrap (.!)
+    const res = controlFlowDemo(10).!;
+    std.debug.print("Control Flow Result: \\n", res);
+
     var x: u32 = 42;
+    // Multiline string
     var y: [*]u8 =
         \\ hello world
         \\ hello world again
@@ -40,4 +148,11 @@ pub const main = fn() !void {
     } else {
         std.debug.print("CAS failed, x = {}\n", x);
     }
+
+    // Array indexing
+    var arr: [3]u32 = undefined;
+    arr[0] = 1;
+    arr[1] = 2;
+    arr[2] = 3;
+    std.debug.print("Array[1]: \\n", arr[1]);
 };

@@ -1,5 +1,7 @@
 const std = @import("std");
 const Parser = @import("parser.zig").Parser;
+const AstPrinter = @import("ast_printer.zig").AstPrinter;
+const build_options = @import("build_options");
 
 pub fn main() !void {
     var da: std.heap.DebugAllocator(.{}) = .{};
@@ -20,7 +22,16 @@ pub fn main() !void {
         defer parser.deinit();
 
         const program_ast = try parser.parseProgram();
-        _ = program_ast;
+
+        if (build_options.debug_logging) {
+            var stderr_buffer: [4096]u8 = undefined;
+            var stderr_writer = std.fs.File.stderr().writer(&stderr_buffer);
+            const stderr = &stderr_writer.interface;
+
+            var printer: AstPrinter = .init(allocator, source, stderr);
+            try printer.printProgram(program_ast);
+            try stderr.flush();
+        }
     }
 }
 
