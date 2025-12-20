@@ -198,6 +198,7 @@ pub const FieldAccessExpr = struct {
 pub const PrimaryExpr = union(enum) {
     int_literal: Token,
     string_literal: Token,
+    multiline_string_literal: []const Token,
     identifier: Token,
     grouped: *Expression,
     fn_literal: *FunctionLiteral,
@@ -231,13 +232,22 @@ pub const BuiltinCall = struct {
 pub const AsmBlock = struct {
     keyword: Token,
     is_pure: bool,
-    template: Token, // string_literal
-    constraints: ?AsmConstraints,
+    template: []const Token,
+    outputs: []const AsmOutput,
+    inputs: []const AsmInput,
+    clobbers: []const Token,
 };
 
-pub const AsmConstraints = struct {
-    output: Token,
-    input: ?Token,
+pub const AsmOutput = struct {
+    name: Token,
+    constraint: Token,
+    expr: *Expression,
+};
+
+pub const AsmInput = struct {
+    name: Token,
+    constraint: Token,
+    expr: *Expression,
 };
 
 pub const StructInit = struct {

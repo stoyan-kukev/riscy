@@ -114,6 +114,7 @@ pub const Token = struct {
         // Literals
         identifier,
         string_literal,
+        multiline_string_literal,
         int_literal,
 
         // Meta
@@ -222,6 +223,11 @@ pub const Tokenizer = struct {
 
             '"' => return self.string(),
 
+            '\\' => {
+                if (self.match('\\')) return self.multilineString();
+                return self.makeToken(.invalid);
+            },
+
             else => return self.makeToken(.invalid),
         }
     }
@@ -280,6 +286,14 @@ pub const Tokenizer = struct {
 
         _ = self.advance();
         return self.makeToken(.string_literal);
+    }
+
+    fn multilineString(self: *Tokenizer) Token {
+        while (self.peek() != '\n' and !self.isAtEnd()) {
+            _ = self.advance();
+        }
+
+        return self.makeToken(.multiline_string_literal);
     }
 
     fn skipWhitespace(self: *Tokenizer) void {
@@ -502,4 +516,16 @@ fn expectToken(t: *Tokenizer, expected_tag: Token.Tag, expected_lexeme: []const 
     if (token.tag != .eof) {
         try testing.expectEqualSlices(u8, expected_lexeme, token.lexeme(t.source));
     }
+}
+
+test "tokenizer - multiline strings" {
+    const source =
+        \\\\line1
+        \\\\line2
+    ;
+    var t = Tokenizer.init(source);
+
+    try expectToken(&t, .multiline_string_literal, "\\\\line1");
+    try expectToken(&t, .multiline_string_literal, "\\\\line2");
+    try expectToken(&t, .eof, "");
 }

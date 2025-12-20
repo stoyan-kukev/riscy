@@ -420,6 +420,19 @@ pub const Parser = struct {
             return self.create(Ast.Expression, .{ .primary = primary });
         }
 
+        if (try self.match(&.{.multiline_string_literal})) {
+            const allocator = self.arena.allocator();
+            var lines: std.ArrayList(Token) = .empty;
+            try lines.append(allocator, self.previous.?);
+
+            while (try self.match(&.{.multiline_string_literal})) {
+                try lines.append(allocator, self.previous.?);
+            }
+
+            const primary = try self.create(Ast.PrimaryExpr, .{ .multiline_string_literal = try lines.toOwnedSlice(allocator) });
+            return self.create(Ast.Expression, .{ .primary = primary });
+        }
+
         if (try self.match(&.{.identifier})) {
             const primary = try self.create(Ast.PrimaryExpr, .{ .identifier = self.previous.? });
             return self.create(Ast.Expression, .{ .primary = primary });
@@ -733,6 +746,7 @@ pub const Parser = struct {
     }
 
     fn parseAsmBlock(self: *Parser) !*Ast.AsmBlock {
+        const allocator = self.arena.allocator();
         const keyword = self.previous.?;
         var is_pure = false;
 
@@ -745,39 +759,75 @@ pub const Parser = struct {
         }
 
         try self.consume(.l_brace, "Expected '{' after asm.");
-        const template = try self.consumeReturn(.string_literal, "Expected assembly template string.");
 
-        var constraints: ?Ast.AsmConstraints = null;
+        var template_tokens: std.ArrayList(Token) = .empty;
+
+        if (try self.match(&.{.string_literal})) {
+            try template_tokens.append(allocator, self.previous.?);
+        } else if (try self.match(&.{.multiline_string_literal})) {
+            try template_tokens.append(allocator, self.previous.?);
+            while (try self.match(&.{.multiline_string_literal})) {
+                try template_tokens.append(allocator, self.previous.?);
+            }
+        } else {
+            return self.parseError("Expected assembly template string.");
+        }
+
+        var outputs: std.ArrayList(Ast.AsmOutput) = .empty;
+        var inputs: std.ArrayList(Ast.AsmInput) = .empty;
+        var clobbers: std.ArrayList(Token) = .empty;
+
+        // Outputs
         if (try self.match(&.{.colon})) {
-            // Check if there is a string literal, otherwise assume empty
-            var output: Token = undefined;
-            if (self.check(&.{.string_literal})) {
-                output = try self.consumeReturn(.string_literal, "Expected output constraints string.");
-            } else {
-                // Create a fake empty string token or just handle it.
-                // For now, let's assume if it's not a string, it's empty constraints?
-                // But we need a Token for AST.
-                // Let's just expect it if present.
-                // If the user wrote `: :`, then after the first colon we have another colon.
-                // So we check if the next token is NOT a colon.
-                if (self.check(&.{.colon}) or self.check(&.{.r_brace})) {
-                    // Empty output constraint.
-                    // We need a dummy token? Or change AST to optional Token.
-                    // Changing AST is annoying now. Let's return the Previous token (the colon) but mark it?
-                    // Or just use the colon token as a placeholder for "empty string".
-                    output = self.previous.?;
-                } else {
-                    output = try self.consumeReturn(.string_literal, "Expected output constraints string.");
+            if (!self.check(&.{ .colon, .r_brace })) {
+                while (true) {
+                    try self.consume(.l_bracket, "Expected '[' before output operand name.");
+                    const name = try self.consumeReturn(.identifier, "Expected output operand name.");
+                    try self.consume(.r_bracket, "Expected ']' after output operand name.");
+
+                    const constraint = try self.consumeReturn(.string_literal, "Expected output constraint string.");
+
+                    try self.consume(.l_paren, "Expected '(' before output expression.");
+                    const expr = try self.parseExpression();
+                    try self.consume(.r_paren, "Expected ')' after output expression.");
+
+                    try outputs.append(allocator, .{ .name = name, .constraint = constraint, .expr = expr });
+
+                    if (!try self.match(&.{.comma})) break;
                 }
             }
 
-            var input: ?Token = null;
+            // Inputs
             if (try self.match(&.{.colon})) {
-                if (self.check(&.{.string_literal})) {
-                    input = try self.consumeReturn(.string_literal, "Expected input constraints string.");
+                if (!self.check(&.{ .colon, .r_brace })) {
+                    while (true) {
+                        try self.consume(.l_bracket, "Expected '[' before input operand name.");
+                        const name = try self.consumeReturn(.identifier, "Expected input operand name.");
+                        try self.consume(.r_bracket, "Expected ']' after input operand name.");
+
+                        const constraint = try self.consumeReturn(.string_literal, "Expected input constraint string.");
+
+                        try self.consume(.l_paren, "Expected '(' before input expression.");
+                        const expr = try self.parseExpression();
+                        try self.consume(.r_paren, "Expected ')' after input expression.");
+
+                        try inputs.append(allocator, .{ .name = name, .constraint = constraint, .expr = expr });
+
+                        if (!try self.match(&.{.comma})) break;
+                    }
+                }
+
+                // Clobbers
+                if (try self.match(&.{.colon})) {
+                    while (true) {
+                        if (self.check(&.{.string_literal})) {
+                            const clobber = try self.consumeReturn(.string_literal, "Expected clobber string.");
+                            try clobbers.append(allocator, clobber);
+                        }
+                        if (!try self.match(&.{.comma})) break;
+                    }
                 }
             }
-            constraints = .{ .output = output, .input = input };
         }
 
         try self.consume(.r_brace, "Expected '}' after asm block.");
@@ -785,8 +835,10 @@ pub const Parser = struct {
         return self.create(Ast.AsmBlock, .{
             .keyword = keyword,
             .is_pure = is_pure,
-            .template = template,
-            .constraints = constraints,
+            .template = try template_tokens.toOwnedSlice(allocator),
+            .outputs = try outputs.toOwnedSlice(allocator),
+            .inputs = try inputs.toOwnedSlice(allocator),
+            .clobbers = try clobbers.toOwnedSlice(allocator),
         });
     }
 

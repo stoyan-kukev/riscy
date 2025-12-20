@@ -1,30 +1,43 @@
-var stack: align(16) [4096]u8 = undefined;
+const std = @import("std");
 
-const Uart = struct.c_abi {
-    rx: u8,
-    tx: u8,
-    status: u8,
-    control: u8,
+pub const atomicCompareAndSwap = fn(ptr: *u32, old: u32, new: u32) bool {
+    var loaded: u32 = 0;
+    var sc_res: u32 = 0;
+    var ok: u32 = 0;
+
+    asm {
+        \\1:
+        \\  lr.w %[loaded], (%[ptr])
+        \\  bne  %[loaded], %[old], 2f
+        \\  sc.w %[sc_res], %[new], (%[ptr])
+        \\  bnez %[sc_res], 1b
+        \\  li   %[ok], 1
+        \\  j    3f
+        \\2:
+        \\  li   %[ok], 0
+        \\3:
+        : [ok] "=r" (ok),                    // outputs
+          [loaded] "=&r" (loaded),
+          [sc_res] "=&r" (sc_res)
+        : [ptr] "r" (ptr),                   // inputs
+          [old] "r" (old),
+          [new] "r" (new)
+        : "memory"                           // clobbers
+    };
+
+    return ok != 0;
 };
 
-const UartPtr = ~allowzero Uart;
-const uart_ptr: UartPtr = 0x1000_0000;
-const buffer_ptr: [~]u8 = 0x2000_0000;
+pub const main = fn() !void {
+    var x: u32 = 42;
+    var y: [*]u8 =
+        \\ hello world
+        \\ hello world again
+    ;
 
-const Flags = struct.packed {
-    a: bool,
-    b: bool,
-    c: bool,
-    d: bool,
-    e: bool,
-    f: bool,
-    g: bool,
-    h: bool,
-};
-
-pub const main = fn() void {
-    uart_ptr.tx = 0xFF;
-    buffer_ptr[0] = 0xAA;
-    const local_ptr: *u8 = &stack[0];
-    local_ptr.* = (0x01 & 0x02) ^ -1;
+    if (atomicCompareAndSwap(&x, 42, 99)) {
+        std.debug.print("CAS succeeded, x = {}\n", x);
+    } else {
+        std.debug.print("CAS failed, x = {}\n", x);
+    }
 };

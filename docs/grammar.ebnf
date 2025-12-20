@@ -126,6 +126,7 @@ suffix_op = "." , "*"                 /* Dereference */
 
 primary = int_literal
         | string_literal
+        | multiline_string_literal , { multiline_string_literal }
         | identifier
         | "(" , expression , ")"
         | function_literal
