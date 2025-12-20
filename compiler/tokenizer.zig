@@ -78,6 +78,7 @@ pub const Token = struct {
         colon,
         comma,
         dot,
+        ellipsis,
 
         // Operators
         equal,
@@ -177,7 +178,14 @@ pub const Tokenizer = struct {
             ';' => return self.makeToken(.semicolon),
             ':' => return self.makeToken(.colon),
             ',' => return self.makeToken(.comma),
-            '.' => return self.makeToken(.dot),
+            '.' => {
+                if (self.peek() == '.' and self.peekNext() == '.') {
+                    _ = self.advance();
+                    _ = self.advance();
+                    return self.makeToken(.ellipsis);
+                }
+                return self.makeToken(.dot);
+            },
 
             '+' => return self.makeToken(if (self.match('=')) .plus_equal else .plus),
             '-' => return self.makeToken(if (self.match('=')) .minus_equal else .minus),

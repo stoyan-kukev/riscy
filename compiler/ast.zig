@@ -68,9 +68,19 @@ pub const SwitchStmt = struct {
 };
 
 pub const SwitchProng = struct {
-    patterns: []const *Expression, // empty list implies 'else'
+    items: []const SwitchItem, // empty list implies 'else'
     is_else: bool,
     body: *Statement,
+};
+
+pub const SwitchItem = union(enum) {
+    expression: *Expression,
+    range: *SwitchRange,
+};
+
+pub const SwitchRange = struct {
+    start: *Expression,
+    end: *Expression,
 };
 
 pub const TypeExpr = struct {
@@ -79,10 +89,15 @@ pub const TypeExpr = struct {
 };
 
 pub const TypePrefix = union(enum) {
-    pointer: Token, // *
+    pointer: PointerPrefix, // *
     optional: Token, // ?
     error_union: Token, // !
-    many_pointer: Token, // [*]
+    many_pointer: PointerPrefix, // [*]
+};
+
+pub const PointerPrefix = struct {
+    star_token: Token,
+    volatile_token: ?Token,
 };
 
 pub const TypeCore = union(enum) {
@@ -91,6 +106,12 @@ pub const TypeCore = union(enum) {
     union_def: *UnionDef,
     enum_def: *EnumDef,
     array: *ArrayType,
+    fn_type: *FunctionType,
+};
+
+pub const FunctionType = struct {
+    params: []const *Param,
+    return_type: *TypeExpr,
 };
 
 pub const ArrayType = struct {
