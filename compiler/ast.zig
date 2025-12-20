@@ -101,18 +101,18 @@ pub const ArrayType = struct {
 pub const StructDef = struct {
     keyword: Token,
     is_packed: bool,
-    fields: []const *ContainerDecl,
+    members: []const *ContainerDecl,
 };
 
 pub const UnionDef = struct {
     keyword: Token,
-    fields: []const *ContainerDecl,
+    members: []const *ContainerDecl,
 };
 
 pub const EnumDef = struct {
     keyword: Token,
     backing_type: ?*TypeExpr,
-    fields: []const Token,
+    members: []const Token,
 };
 
 pub const ContainerDecl = union(enum) {

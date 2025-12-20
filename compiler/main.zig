@@ -17,6 +17,8 @@ pub fn main() !void {
         defer allocator.free(source);
 
         var parser: Parser = try .init(allocator, source);
+        defer parser.deinit();
+
         const program_ast = try parser.parseProgram();
         _ = program_ast;
     }

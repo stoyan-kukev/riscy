@@ -1,4 +1,7 @@
 pub const main = fn() !void {
 	var x: u32 = 0xFF;
+	while (x < 0xFFF) {
+		x += 1;
+	}
 	x += 150;
-}
+};

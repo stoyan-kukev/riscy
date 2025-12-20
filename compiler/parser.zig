@@ -80,14 +80,21 @@ pub const Parser = struct {
         return parser;
     }
 
+    pub fn deinit(self: *Parser) void {
+        self.arena.deinit();
+    }
+
     pub fn parseProgram(self: *Parser) !Ast.Program {
         const allocator = self.arena.allocator();
 
         var decls: std.ArrayList(*Ast.Declaration) = .empty;
 
-        while (!self.check(.eof)) {
+        while (!self.check(&.{.eof})) {
             const decl = self.parseDeclaration() catch |err| switch (err) {
-                error.ParseError => try self.synchronize(),
+                error.ParseError => {
+                    try self.synchronize();
+                    continue;
+                },
                 else => return err,
             };
 
@@ -97,7 +104,7 @@ pub const Parser = struct {
         return .{ .decls = try decls.toOwnedSlice(allocator) };
     }
 
-    fn parseDeclaration(self: *Parser) !*Ast.Declaration {
+    fn parseDeclaration(self: *Parser) Parser.Error!*Ast.Declaration {
         const pub_token = if (try self.match(&.{.@"pub"})) self.previous else null;
         const extern_export_token = if (try self.match(&.{.@"export"}) or try self.match(&.{.@"extern"})) self.previous else null;
         const link_section_token = if (try self.match(&.{.@"linksection"})) self.previous else null;
@@ -132,7 +139,7 @@ pub const Parser = struct {
         return decl;
     }
 
-    fn parseTypeExpr(self: *Parser) !*Ast.TypeExpr {
+    fn parseTypeExpr(self: *Parser) Parser.Error!*Ast.TypeExpr {
         const allocator = self.arena.allocator();
         var prefixes: std.ArrayList(Ast.TypePrefix) = .empty;
 
@@ -171,11 +178,11 @@ pub const Parser = struct {
         const core: Ast.TypeCore = if (try self.match(&.{.identifier}))
             .{ .identifier = self.previous.? }
         else if (try self.match(&.{.@"struct"}))
-            try self.parseStruct()
+            .{ .struct_def = try self.parseStruct() }
         else if (try self.match(&.{.@"enum"}))
-            try self.parseEnum()
+            .{ .enum_def = try self.parseEnum() }
         else if (try self.match(&.{.@"union"}))
-            try self.parseUnion()
+            .{ .union_def = try self.parseUnion() }
         else
             return self.parseError("Expected type.");
 
@@ -195,13 +202,15 @@ pub const Parser = struct {
         while (true) {
             const next_prec: Precedence = .fromTag(self.current.?.tag);
 
-            if (next_prec.less(curr_prec)) break;
+            if (next_prec == .lowest or next_prec.less(curr_prec)) break;
 
             try self.advance();
             const operator = self.previous.?;
 
             left = try self.parseInfix(left, operator);
         }
+
+        return left;
     }
 
     fn parsePrefix(self: *Parser) !*Ast.Expression {
@@ -245,7 +254,9 @@ pub const Parser = struct {
 
         // Function Literals
         if (try self.match(&.{.@"fn"})) {
-            return self.parseError("Function literals aren't implemented yet.");
+            const fn_literal = try self.parseFnLiteral();
+            const primary = try self.create(Ast.PrimaryExpr, .{ .fn_literal = fn_literal });
+            return self.create(Ast.Expression, .{ .primary = primary });
         }
 
         return self.parseError("Expected expression.");
@@ -258,7 +269,7 @@ pub const Parser = struct {
             // Function call
             .l_paren => {
                 var args: std.ArrayList(*Ast.Expression) = .empty;
-                if (!self.check(.r_paren)) {
+                if (!self.check(&.{.r_paren})) {
                     while (true) {
                         try args.append(allocator, try self.parseExpression());
                         if (!try self.match(&.{.comma})) break;
@@ -342,6 +353,267 @@ pub const Parser = struct {
         }
     }
 
+    fn parseStruct(self: *Parser) !*Ast.StructDef {
+        const allocator = self.arena.allocator();
+        const keyword = self.previous.?;
+
+        var is_packed = false;
+        if (try self.match(&.{.dot})) {
+            try self.consume(.@"packed", "Expected 'packed' after 'struct.'.");
+            is_packed = true;
+        }
+
+        try self.consume(.l_brace, "Expected '{' before struct body.");
+
+        var members: std.ArrayList(*Ast.ContainerDecl) = .empty;
+        while (!self.check(&.{ .r_brace, .eof })) {
+            // Check for associated declaration, if has to be a field
+            if (self.check(&.{ .@"pub", .@"const", .@"var", .@"extern", .@"export" })) {
+                const decl = try self.parseDeclaration();
+
+                const container_node = try self.create(Ast.ContainerDecl, .{ .declaration = decl });
+                try members.append(allocator, container_node);
+            } else {
+                const name = try self.consumeReturn(.identifier, "Expected field name or declaration.");
+
+                try self.consume(.colon, "Expected ':' after field name.");
+
+                const type_expr = try self.parseTypeExpr();
+
+                if (!try self.match(&.{.comma})) return self.parseError("Expected comma after field declaration.");
+
+                const field = try self.create(Ast.FieldDecl, .{
+                    .name = name,
+                    .type_expr = type_expr,
+                });
+
+                const container_node = try self.create(Ast.ContainerDecl, .{ .field = field });
+                try members.append(allocator, container_node);
+            }
+        }
+
+        try self.consume(.r_brace, "Expected '}' after struct body.");
+
+        return try self.create(Ast.StructDef, .{
+            .keyword = keyword,
+            .is_packed = is_packed,
+            .members = try members.toOwnedSlice(allocator),
+        });
+    }
+
+    fn parseFnLiteral(self: *Parser) !*Ast.FunctionLiteral {
+        const allocator = self.arena.allocator();
+
+        var attribute: ?Token = null;
+        if (try self.match(&.{.dot})) {
+            if (self.check(&.{ .naked, .interrupt })) {
+                try self.advance();
+                attribute = self.previous;
+            } else {
+                return self.parseError("Expected function attribute (naked/interrupt) after 'fn.'.");
+            }
+        }
+        try self.consume(.l_paren, "Expected '(' after 'fn'.");
+
+        var params: std.ArrayList(*Ast.Param) = .empty;
+
+        if (!self.check(&.{.r_paren})) {
+            while (true) {
+                const name = try self.consumeReturn(.identifier, "Expected parameter name.");
+                try self.consume(.colon, "Expected ':' after paramater name.");
+                const type_expr = try self.parseTypeExpr();
+
+                const param = try self.create(Ast.Param, .{
+                    .name = name,
+                    .type_expr = type_expr,
+                });
+                try params.append(allocator, param);
+
+                if (!try self.match(&.{.comma})) break;
+            }
+        }
+        try self.consume(.r_paren, "Expected ')' after parameters.");
+
+        const return_type = try self.parseTypeExpr();
+
+        const body = try self.parseBlock();
+
+        return self.create(Ast.FunctionLiteral, .{
+            .attribute = attribute,
+            .params = try params.toOwnedSlice(allocator),
+            .return_type = return_type,
+            .body = body,
+        });
+    }
+
+    fn parseBlock(self: *Parser) Parser.Error!*Ast.Block {
+        const allocator = self.arena.allocator();
+
+        try self.consume(.l_brace, "Expected '{' to start block.");
+        var stmts: std.ArrayList(*Ast.Statement) = .empty;
+
+        while (!self.check(&.{ .r_brace, .eof })) {
+            const stmt = try self.parseStatement();
+            try stmts.append(allocator, stmt);
+        }
+
+        try self.consume(.r_brace, "Expected '}' after block.");
+
+        return self.create(Ast.Block, .{
+            .stmts = try stmts.toOwnedSlice(allocator),
+        });
+    }
+
+    fn parseStatement(self: *Parser) Parser.Error!*Ast.Statement {
+        if (try self.match(&.{.@"if"})) return self.parseIfStatement();
+        if (try self.match(&.{.@"while"})) return self.parseWhileStatement();
+        if (try self.match(&.{.@"for"})) return self.parseForStatement();
+        if (try self.match(&.{.@"return"})) return self.parseReturnStatement();
+        if (try self.match(&.{.@"switch"})) return self.parseSwitchStatement();
+        if (try self.match(&.{ .@"defer", .@"errdefer" })) return self.parseDeferStatement();
+
+        if (try self.match(&.{.@"break"})) {
+            const token = self.previous.?;
+            try self.consume(.semicolon, "Expected ';' after break.");
+            return self.create(Ast.Statement, .{ .break_stmt = token });
+        }
+
+        if (try self.match(&.{.@"continue"})) {
+            const token = self.previous.?;
+            try self.consume(.semicolon, "Expected ';' after continue.");
+            return self.create(Ast.Statement, .{ .continue_stmt = token });
+        }
+
+        if (self.check(&.{.l_brace})) {
+            const block = try self.parseBlock();
+            return self.create(Ast.Statement, .{ .block = block });
+        }
+
+        if (self.check(&.{ .@"var", .@"const" })) {
+            const decl = try self.parseDeclaration();
+            return self.create(Ast.Statement, .{ .declaration = decl });
+        }
+
+        const expr = try self.parseExpression();
+        try self.consume(.semicolon, "Expected ';' after expression.");
+        return self.create(Ast.Statement, .{ .expression = expr });
+    }
+
+    fn parseIfStatement(self: *Parser) !*Ast.Statement {
+        try self.consume(.l_paren, "Expected '(' after 'if'.");
+        const condition = try self.parseExpression();
+        try self.consume(.r_paren, "Expected ')' after 'if' condition.");
+
+        const then_block = try self.parseBlock();
+
+        var else_branch: ?*Ast.Statement = null;
+
+        if (try self.match(&.{.@"else"})) {
+            if (self.check(&.{.@"if"})) {
+                else_branch = try self.parseStatement();
+            } else {
+                const block = try self.parseBlock();
+                else_branch = try self.create(Ast.Statement, .{
+                    .block = block,
+                });
+            }
+        }
+
+        const if_node = try self.create(Ast.IfStmt, .{
+            .condition = condition,
+            .then_block = then_block,
+            .else_branch = else_branch,
+        });
+
+        return self.create(Ast.Statement, .{ .if_stmt = if_node });
+    }
+
+    fn parseWhileStatement(self: *Parser) !*Ast.Statement {
+        try self.consume(.l_paren, "Expected '(' after 'while'.");
+        const condition = try self.parseExpression();
+        try self.consume(.r_paren, "Expected ')' after 'while' condition.");
+
+        const body = try self.parseBlock();
+
+        const while_node = try self.create(Ast.WhileStmt, .{
+            .condition = condition,
+            .body = body,
+        });
+
+        return self.create(Ast.Statement, .{ .while_stmt = while_node });
+    }
+
+    fn parseReturnStatement(self: *Parser) !*Ast.Statement {
+        const keyword = self.previous.?;
+        var value: ?*Ast.Expression = null;
+
+        if (!self.check(&.{.semicolon})) {
+            value = try self.parseExpression();
+        }
+        try self.consume(.semicolon, "Expected ';' after 'return' statement.");
+
+        const return_node = try self.create(Ast.ReturnStmt, .{
+            .keyword = keyword,
+            .value = value,
+        });
+
+        return self.create(Ast.Statement, .{ .return_stmt = return_node });
+    }
+
+    fn parseDeferStatement(self: *Parser) !*Ast.Statement {
+        const keyword = self.previous.?;
+        const payload = try self.parseStatement();
+
+        const defer_node = try self.create(Ast.DeferStmt, .{
+            .keyword = keyword,
+            .payload = payload,
+        });
+
+        return self.create(Ast.Statement, .{ .defer_stmt = defer_node });
+    }
+
+    fn parseEnum(self: *Parser) !*Ast.EnumDef {
+        const allocator = self.arena.allocator();
+
+        const keyword = self.previous.?;
+
+        var backing_type: ?*Ast.TypeExpr = null;
+        if (try self.match(&.{.l_paren})) {
+            backing_type = try self.parseTypeExpr();
+            try self.consume(.r_paren, "Expected ')' after enum backing type.");
+        }
+
+        try self.consume(.l_brace, "Expected '{' after 'enum'.");
+
+        var members: std.ArrayList(Token) = .empty;
+
+        while (!self.check(&.{ .r_brace, .eof })) {
+            const name = try self.consumeReturn(.identifier, "Expected enum identifier");
+            try members.append(allocator, name);
+            _ = try self.match(&.{.comma});
+        }
+
+        try self.consume(.r_brace, "Expected '}' after 'enum' fields.");
+
+        return self.create(Ast.EnumDef, .{
+            .keyword = keyword,
+            .backing_type = backing_type,
+            .members = try members.toOwnedSlice(allocator),
+        });
+    }
+
+    fn parseUnion(self: *Parser) !*Ast.UnionDef {
+        return self.parseError("Unions not implemented yet.");
+    }
+
+    fn parseForStatement(self: *Parser) !*Ast.Statement {
+        return self.parseError("For loops not implemented yet.");
+    }
+
+    fn parseSwitchStatement(self: *Parser) !*Ast.Statement {
+        return self.parseError("Switch not implemented yet.");
+    }
+
     fn advance(self: *Parser) !void {
         self.previous = self.current;
 
@@ -355,7 +627,7 @@ pub const Parser = struct {
     }
 
     fn consume(self: *Parser, expected_tag: Token.Tag, err_msg: ?[]const u8) !void {
-        if (self.check(expected_tag)) {
+        if (self.check(&.{expected_tag})) {
             return try self.advance();
         }
 
@@ -363,15 +635,24 @@ pub const Parser = struct {
     }
 
     fn match(self: *Parser, expected_tags: []const Token.Tag) !bool {
-        const contains_tag = std.mem.containsAtLeastScalar2(Token.Tag, expected_tags, self.current.?.tag, 1);
+        const contains_tag = self.check(expected_tags);
         if (!contains_tag) return false;
 
         try self.advance();
         return true;
     }
 
-    fn check(self: *Parser, expected_tag: Token.Tag) bool {
-        return self.current.?.tag == expected_tag;
+    fn check(self: *Parser, expected_tags: []const Token.Tag) bool {
+        const contains_tag = std.mem.containsAtLeastScalar2(Token.Tag, expected_tags, self.current.?.tag, 1);
+        return contains_tag;
+    }
+
+    fn consumeReturn(self: *Parser, tag: Token.Tag, msg: []const u8) !Token {
+        if (self.check(&.{tag})) {
+            try self.advance();
+            return self.previous.?;
+        }
+        return self.parseError(msg);
     }
 
     /// Try to recover from a panicking Parser by finding a statement,
@@ -379,6 +660,8 @@ pub const Parser = struct {
     /// errors on our way.
     fn synchronize(self: *Parser) !void {
         self.panicking = false;
+
+        try self.advance();
 
         // While we aren't at the end or at a valid token, keep going
         while (self.current.?.tag != .eof) : (try self.advance()) {
