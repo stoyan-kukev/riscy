@@ -6,6 +6,7 @@ program = { declaration };
 block = "{" , { statement } , "}";
 
 statement = declaration
+          | assignment_stmt
           | if_stmt
           | while_stmt
           | for_stmt
@@ -17,7 +18,7 @@ statement = declaration
           | expression_stmt;
 
 /* ==========================================================================
-   2. DECLARATIONS
+   2. DECLARATIONS & ASSIGNMENTS
    ========================================================================== */
 declaration = [ "pub" ]
             , [ "extern" | "export" ]
@@ -28,6 +29,9 @@ declaration = [ "pub" ]
             , [ "=" , expression ]
             , ";";
 
+/* Mutation of existing variables */
+assignment_stmt = postfix , "=" , expression , ";";
+
 /* ==========================================================================
    3. CONTROL FLOW
    ========================================================================== */
@@ -37,8 +41,9 @@ if_stmt = "if" , "(" , expression , ")" , block , [ "else" , ( block | if_stmt )
 
 while_stmt = "while" , "(" , expression , ")" , block;
 
-for_stmt = "for" , "(" , for_init , [ expression ] , ";" , [ expression ] , ")" , block;
-for_init = declaration | expression_stmt | ";";
+for_stmt = "for" , "(" , expression , ")" , [ "|" , capture_list , "|" ] , block;
+
+capture_list = identifier , [ "," , identifier ];
 
 return_stmt = "return" , [ expression ] , ";";
 break_stmt = "break" , ";";
@@ -51,14 +56,14 @@ switch_prong = switch_patterns , "=>" , ( statement | block ) , ",";
 switch_patterns = "else"
                 | switch_item , { "," , switch_item };
 
-switch_item = expression , [ "..." , expression ];
+switch_item = expression , [ ".." , expression ];
 
 /* ==========================================================================
    4. TYPES
    ========================================================================== */
 type_expr = type_prefix , type_core;
 
-/* Recursive prefixes: *T, ~T (volatile), ?T, !T, [*]T, [~]T, allowzero, align(N) */
+/* Recursive prefixes */
 type_prefix = { pointer_prefix | "?" | "!" | multi_prefix | "allowzero" | "align" , "(" , expression , ")" };
 
 pointer_prefix = "*" | "~"; /* * = normal, ~ = volatile */
@@ -68,29 +73,21 @@ type_core = identifier
           | struct_def
           | union_def
           | enum_def
-          | "[" , int_literal , "]" , type_expr /* e.g. [N]u8 */
+          | "[" , int_literal , "]" , type_expr /* Array: [N]T */
+          | "[" , "]" , type_expr               /* Slice: []T  */
           | "fn" , [ "." , identifier ] , "(" , [ param_list ] , ")" , type_expr;
 
-/* Structs: struct, struct.packed, struct.c_abi */
 struct_def = "struct" , [ "." , ( "packed" | "c_abi" ) ] , "{" , { container_decl } , "}";
+union_def  = "union"  , [ "." , "c_abi" ] , "{" , { container_decl } , "}";
+enum_def   = "enum"   , [ type_expr ] , "{" , { identifier , "," } , "}";
 
-/* Unions: union, union.c_abi */
-union_def = "union" , [ "." , "c_abi" ] , "{" , { container_decl } , "}";
-
-/* Fields or Nested Decls */
-container_decl = field_decl
-               | declaration;
-
-field_decl = identifier , ":" , type_expr , ",";
-
-enum_def = "enum" , [ type_expr ] , "{" , { identifier , "," } , "}";
+container_decl = field_decl | declaration;
+field_decl     = identifier , ":" , type_expr , ",";
 
 /* ==========================================================================
    5. EXPRESSIONS (Strict Boolean & Precedence)
    ========================================================================== */
-expression = assignment;
-
-assignment = logical_or , [ "=" , assignment ];
+expression = logical_or;
 
 /* Level 1: Boolean Logic */
 logical_or  = logical_and , { "or" , logical_and };
@@ -118,10 +115,12 @@ unary = ( "-" | "not" | "~" ) , unary
 postfix = primary , { suffix_op };
 
 suffix_op = "." , "*"                 /* Dereference */
+          | "." , "~"                 /* Dereference (Volatile) */
           | "." , "?"                 /* Unwrap Optional (Panic) */
           | "." , "!"                 /* Unwrap Error (Propagate) */
           | "." , identifier          /* Field Access */
           | "[" , expression , "]"    /* Array Index */
+          | "[" , expression , ".." , expression , "]" /* Slice Creation */
           | "(" , [ arg_list ] , ")"  /* Function Call */;
 
 primary = int_literal
@@ -135,7 +134,7 @@ primary = int_literal
         | struct_init;
 
 /* ==========================================================================
-   6. LITERALS
+   6. LITERALS & HELPERS
    ========================================================================== */
 function_literal = "fn" , [ "." , identifier ] , "(" , [ param_list ] , ")" , type_expr , block;
 param_list = param , { "," , param };
@@ -144,14 +143,10 @@ param = identifier , ":" , type_expr;
 arg_list = expression , { "," , expression };
 
 asm_block = "asm" , [ "." , "pure" ] , "{" , asm_template , [ asm_outputs , [ asm_inputs , [ asm_clobbers ] ] ] , "}";
-
-asm_template = string_literal
-             | multiline_string_literal , { multiline_string_literal };
-
+asm_template = string_literal | multiline_string_literal , { multiline_string_literal };
 asm_outputs = ":" , [ asm_operand_list ];
 asm_inputs  = ":" , [ asm_operand_list ];
 asm_clobbers = ":" , [ string_literal , { "," , string_literal } ];
-
 asm_operand_list = asm_operand , { "," , asm_operand };
 asm_operand = "[" , identifier , "]" , string_literal , "(" , expression , ")";
 
