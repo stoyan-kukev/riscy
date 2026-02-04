@@ -1,0 +1,53 @@
+// Some comments
+// to check
+// if we actually ignore them properly in the tokenizer
+pub const PI: f32 = 3.14159;
+extern var _stack_start: u32;
+
+const Registers = struct.packed {
+    ra: u32,
+    sp: u32,
+    status: u8 align(4),
+};
+
+const State = enum {
+    Idle,
+    Running,
+    Error,
+};
+
+const Payload = union {
+    byte: u8,
+    word: u32,
+};
+
+export fn kernel_entry(uart_base: ~u8, buffer: []u8) !void {
+    var status: State = .Idle;
+    
+    switch (status) {
+        .Idle => {
+            const sub_slice = buffer[0..10];
+        },
+        .Error => return error.HardwareFault,
+        else => unreachable,
+    }
+
+    for (buffer) |byte, i| {
+        uart_base.* = byte;
+        
+        if (byte == 0) break;
+    }
+    defer uart_base.~ = 0xFF;    
+
+    const val = safe_read().!;
+    const opt = maybe_null().?;
+
+    var x = (val << 2) | 0x0F;
+    x += 1;
+
+    asm.pure {
+        "wfi" // More comments to see if we ignore them
+    };
+}
+
+const ptr = @cast(*u32, 0x1000);
