@@ -28,6 +28,21 @@ pub const Node = struct {
         pointer_type,
         optional_type,
         error_union_type,
+        binary_expr,
+        unary_expr,
+        ptr_dereference,
+        volatile_dereference,
+        optional_unwrap,
+        error_unwrap,
+        fn_call,
+        index_access,
+        slice_expr,
+        field_access,
+        root,
+        struct_init,
+        builtin_call,
+        identifier,
+        int_literal,
     };
 
     pub const Data = union {
@@ -66,6 +81,7 @@ pub const Node = struct {
             literal_list: []*Node,
         },
         array_type: struct {
+            size_expr: *Node,
             child_type: *Node,
             is_const: bool,
         },
@@ -89,7 +105,7 @@ pub const Node = struct {
         if_stmt: struct {
             condition: *Node,
             then_branch: *Node,
-            else_branch: *?Node,
+            else_branch: ?*Node,
         },
         while_stmt: struct {
             condition: *Node,
@@ -110,11 +126,56 @@ pub const Node = struct {
         continue_stmt: void,
         defer_stmt: struct {
             body: *Node,
+            is_errdefer: bool,
         },
         asm_block: struct {
+            is_pure: bool,
             body: *Node,
             operands: []const AsmOperand,
+            clobbers: []const Token,
         },
+        binary_expr: struct {
+            left: *Node,
+            operator: Token.Tag,
+            right: *Node,
+        },
+        unary_expr: struct {
+            operator: Token.Tag,
+            operand: *Node,
+        },
+        /// Used for .*, .~, .?, .!
+        unary_suffix: struct {
+            lhs: *Node,
+        },
+        fn_call: struct {
+            lhs: *Node,
+            args: []const *Node,
+        },
+        index_access: struct {
+            lhs: *Node,
+            index: *Node,
+        },
+        slice_expr: struct {
+            lhs: *Node,
+            start: *Node,
+            end: ?*Node,
+        },
+        field_access: struct {
+            lhs: *Node,
+            field_name: Token,
+        },
+        root: struct {
+            decls: []const *Node,
+        },
+        struct_init: struct {
+            fields: []const *Node,
+        },
+        builtin_call: struct {
+            name: Token,
+            args: []const *Node,
+        },
+        /// Used for literals, identifiers, etc.
+        none: void,
     };
 
     pub const SwitchCase = struct {
