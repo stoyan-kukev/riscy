@@ -230,7 +230,7 @@ pub const Parser = struct {
                 return expr;
             },
             .multiline_string_literal => return self.parseMultilineStringLiteral(),
-            .bang, .minus, .tilde => return self.parseUnary(),
+            .bang, .minus, .tilde, .keyword_not => return self.parseUnary(),
             .keyword_struct => return self.parseStructLiteral(),
             .keyword_enum => return self.parseEnumLiteral(),
             .keyword_union => return self.parseUnionLiteral(),
@@ -303,8 +303,17 @@ pub const Parser = struct {
     }
 
     fn parseUnary(self: *Parser) Parser.Error!*Node {
-        _ = self;
-        return error.NotImplemented;
+        const token = self.curr;
+        self.advance();
+
+        const operand = try self.parseExpression(.prefix);
+
+        return self.createNode(.unary_expr, token, .{
+            .unary_expr = .{
+                .operator = token.tag,
+                .operand = operand,
+            },
+        });
     }
 
     fn parseTypeExpr(self: *Parser) Parser.Error!*Node {
@@ -415,13 +424,45 @@ pub const Parser = struct {
     }
 
     fn parseIf(self: *Parser) Parser.Error!*Node {
-        _ = self;
-        return error.NotImplemented;
+        const token = self.curr;
+        self.advance();
+
+        _ = try self.consume(.l_paren);
+        const condition = try self.parseExpression(.lowest);
+        _ = try self.consume(.r_paren);
+
+        const then_branch = try self.parseStatement();
+
+        var else_branch: ?*Node = null;
+        if (self.match(&.{.keyword_else})) {
+            else_branch = try self.parseStatement();
+        }
+
+        return self.createNode(.if_stmt, token, .{
+            .if_stmt = .{
+                .condition = condition,
+                .then_branch = then_branch,
+                .else_branch = else_branch,
+            },
+        });
     }
 
     fn parseWhile(self: *Parser) Parser.Error!*Node {
-        _ = self;
-        return error.NotImplemented;
+        const token = self.curr;
+        self.advance();
+
+        _ = try self.consume(.l_paren);
+        const condition = try self.parseExpression(.lowest);
+        _ = try self.consume(.r_paren);
+
+        const body = try self.parseStatement();
+
+        return self.createNode(.while_stmt, token, .{
+            .while_stmt = .{
+                .condition = condition,
+                .body = body,
+            },
+        });
     }
 
     fn parseFor(self: *Parser) Parser.Error!*Node {
@@ -435,23 +476,50 @@ pub const Parser = struct {
     }
 
     fn parseReturn(self: *Parser) Parser.Error!*Node {
-        _ = self;
-        return error.NotImplemented;
+        const token = self.curr;
+        self.advance();
+
+        var value: ?*Node = null;
+
+        if (!self.check(&.{.semicolon})) {
+            value = try self.parseExpression(.lowest);
+        }
+
+        _ = try self.consume(.semicolon);
+
+        return self.createNode(.return_stmt, token, .{
+            .return_stmt = value,
+        });
     }
 
     fn parseBreak(self: *Parser) Parser.Error!*Node {
-        _ = self;
-        return error.NotImplemented;
+        const token = self.curr;
+        self.advance();
+
+        _ = try self.consume(.semicolon);
+        return self.createNode(.continue_stmt, token, .{ .none = {} });
     }
 
     fn parseContinue(self: *Parser) Parser.Error!*Node {
-        _ = self;
-        return error.NotImplemented;
+        const token = self.curr;
+        self.advance();
+
+        _ = try self.consume(.semicolon);
+        return self.createNode(.continue_stmt, token, .{ .none = {} });
     }
 
     fn parseDefer(self: *Parser) Parser.Error!*Node {
-        _ = self;
-        return error.NotImplemented;
+        const token = self.curr;
+        self.advance();
+
+        const body = try self.parseStatement();
+
+        return self.createNode(.defer_stmt, token, .{
+            .defer_stmt = .{
+                .body = body,
+                .is_errdefer = (token.tag == .keyword_errdefer),
+            },
+        });
     }
 
     fn parseAsm(self: *Parser) Parser.Error!*Node {
