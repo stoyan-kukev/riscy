@@ -72,10 +72,14 @@ pub const Parser = struct {
         self.peek = self.tokenizer.next();
     }
 
+    /// Checks if the current tag matches a set of tags.
     fn check(self: *Parser, tags: []const Token.Tag) bool {
         return std.mem.containsAtLeastScalar(Token.Tag, tags, 1, self.curr.tag);
     }
 
+    /// Checks if the current tag matches a set of tags.
+    /// If it does, advance past it and return true.
+    /// If not, it just returns false without advancing.
     fn match(self: *Parser, tags: []const Token.Tag) bool {
         if (self.check(tags)) {
             self.advance();
@@ -85,6 +89,9 @@ pub const Parser = struct {
         return false;
     }
 
+    /// Attempts to consume an expected token and return it.
+    /// Returns `error.UnexpectedToken` if the current token
+    /// and the expected one don't match.
     fn consume(self: *Parser, tag: Token.Tag) !Token {
         if (self.check(&.{tag})) {
             const token = self.curr;
@@ -544,15 +551,61 @@ pub const Parser = struct {
     }
 
     fn parseCall(self: *Parser, left: *Node) Parser.Error!*Node {
-        _ = self;
-        _ = left;
-        return error.NotImplemented;
+        const token = self.curr;
+        self.advance();
+
+        var args: std.ArrayList(*Node) = .empty;
+
+        if (!self.check(&.{.r_paren})) {
+            while (true) {
+                const arg = try self.parseExpression(.lowest);
+                try args.append(self.arena, arg);
+
+                if (!self.match(&.{.comma})) break;
+            }
+        }
+
+        _ = try self.consume(.r_paren);
+
+        return self.createNode(.fn_call, token, .{
+            .fn_call = .{
+                .lhs = left,
+                .args = try args.toOwnedSlice(self.arena),
+            },
+        });
     }
 
     fn parseIndex(self: *Parser, left: *Node) Parser.Error!*Node {
-        _ = self;
-        _ = left;
-        return error.NotImplemented;
+        const token = self.curr;
+        self.advance();
+
+        const start = try self.parseExpression(.lowest);
+
+        if (self.match(&.{.dot_dot})) {
+            var end: ?*Node = null;
+            if (!self.check(&.{.r_bracket})) {
+                end = try self.parseExpression(.lowest);
+            }
+
+            _ = try self.consume(.r_bracket);
+
+            return self.createNode(.slice_access, token, .{
+                .slice_access = .{
+                    .lhs = left,
+                    .start = start,
+                    .end = end,
+                },
+            });
+        }
+
+        _ = try self.consume(.r_bracket);
+
+        return self.createNode(.index_access, token, .{
+            .index_access = .{
+                .lhs = left,
+                .index = start,
+            },
+        });
     }
 
     fn parseDotAccess(self: *Parser, left: *Node) Parser.Error!*Node {

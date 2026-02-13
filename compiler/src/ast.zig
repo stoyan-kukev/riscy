@@ -36,7 +36,7 @@ pub const Node = struct {
         error_unwrap,
         fn_call,
         index_access,
-        slice_expr,
+        slice_access,
         field_access,
         root,
         struct_init,
@@ -157,7 +157,7 @@ pub const Node = struct {
             lhs: *Node,
             index: *Node,
         },
-        slice_expr: struct {
+        slice_access: struct {
             lhs: *Node,
             start: *Node,
             end: ?*Node,
