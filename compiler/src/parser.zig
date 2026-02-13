@@ -301,8 +301,90 @@ pub const Parser = struct {
     }
 
     fn parseTypeExpr(self: *Parser) Parser.Error!*Node {
-        _ = self;
-        return error.NotImplemented;
+        switch (self.curr.tag) {
+            .star, .tilde => {
+                const token = self.curr;
+                self.advance();
+
+                const is_const = self.match(&.{.keyword_const});
+                const allow_zero = self.match(&.{.keyword_allowzero});
+
+                var align_expr: ?*Node = null;
+                if (self.match(&.{.keyword_align})) {
+                    _ = try self.consume(.l_paren);
+                    align_expr = try self.parseExpression(.lowest);
+                    _ = try self.consume(.r_paren);
+                }
+
+                const child = try self.parseTypeExpr();
+
+                return self.createNode(.pointer_type, token, .{
+                    .pointer_type = .{
+                        .child_type = child,
+                        .kind = if (token.tag == .star) .normal else .@"volatile",
+                        .align_expr = align_expr,
+                        .allow_zero = allow_zero,
+                        .is_const = is_const,
+                    },
+                });
+            },
+            .question_mark => {
+                const token = self.curr;
+                self.advance();
+
+                const child = try self.parseTypeExpr();
+
+                return self.createNode(.optional_type, token, .{
+                    .optional_type = .{
+                        .child_type = child,
+                    },
+                });
+            },
+            .bang => {
+                const token = self.curr;
+                self.advance();
+
+                const child = try self.parseTypeExpr();
+
+                return self.createNode(.error_union_type, token, .{
+                    .error_union_type = .{
+                        .child_type = child,
+                    },
+                });
+            },
+            .l_bracket => {
+                const token = self.curr;
+                self.advance();
+
+                if (self.match(&.{.r_bracket})) {
+                    const is_const = self.match(&.{.keyword_const});
+                    const child = try self.parseTypeExpr();
+
+                    return self.createNode(.slice_type, token, .{ .slice_type = .{
+                        .child_type = child,
+                        .is_const = is_const,
+                    } });
+                } else {
+                    const size_expr = try self.parseExpression(.lowest);
+                    _ = try self.consume(.r_bracket);
+
+                    const is_const = self.match(&.{.keyword_const});
+                    const child = try self.parseTypeExpr();
+
+                    return self.createNode(.array_type, token, .{
+                        .array_type = .{
+                            .size_expr = size_expr,
+                            .child_type = child,
+                            .is_const = is_const,
+                        },
+                    });
+                }
+            },
+            .identifier, .keyword_struct, .keyword_union, .keyword_enum, .keyword_fn => {
+                return self.parsePrefix();
+            },
+            else => return error.UnexpectedToken,
+        }
     }
 
     fn parseStructLiteral(self: *Parser) Parser.Error!*Node {
@@ -474,8 +556,29 @@ pub const Parser = struct {
     }
 
     fn parseDotAccess(self: *Parser, left: *Node) Parser.Error!*Node {
-        _ = self;
-        _ = left;
-        return error.NotImplemented;
+        const token = self.curr;
+        self.advance();
+
+        if (self.match(&.{.star})) {
+            return self.createNode(.ptr_dereference, token, .{ .unary_suffix = .{ .lhs = left } });
+        }
+        if (self.match(&.{.tilde})) {
+            return self.createNode(.volatile_dereference, token, .{ .unary_suffix = .{ .lhs = left } });
+        }
+        if (self.match(&.{.question_mark})) {
+            return self.createNode(.optional_unwrap, token, .{ .unary_suffix = .{ .lhs = left } });
+        }
+        if (self.match(&.{.bang})) {
+            return self.createNode(.error_unwrap, token, .{ .unary_suffix = .{ .lhs = left } });
+        }
+
+        const field = try self.consume(.identifier);
+
+        return self.createNode(.field_access, token, .{
+            .field_access = .{
+                .lhs = left,
+                .field_name = field,
+            },
+        });
     }
 };
