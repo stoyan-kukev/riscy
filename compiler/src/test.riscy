@@ -1,7 +1,20 @@
 // Some comments
 // to check
 // if we actually ignore them properly in the tokenizer
-pub const PI: f32 = 3.14159;
+pub const PI = 3;
+pub const Name = "hello";
+pub const Lmao = 'g';
+pub const Xd = 555;
+const some_assembly =
+\\ flw fa2, 0(a0)
+\\ fld fa3, 0(a1)
+\\ fcvt.s.d fa3, fa1
+\\ fcvt.s.d fa3, fa3
+\\ fadd.s fa1, fa1, fa3
+\\ fadd.s fa0, fa0, fa2
+\\ fadd.s fa0, fa0, fa1
+;
+
 extern var _stack_start: u32;
 
 const Registers = struct.packed {

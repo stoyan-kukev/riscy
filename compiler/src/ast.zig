@@ -43,12 +43,14 @@ pub const Node = struct {
         builtin_call,
         identifier,
         int_literal,
+        string_literal,
+        char_literal,
     };
 
     pub const Data = union {
         declaration: struct {
             is_pub: bool,
-            linkage: enum { @"extern", @"export", none },
+            linkage: Node.Linkage,
             linksection_val: ?*Node,
             is_const: bool,
             type_expr: ?*Node,
@@ -56,7 +58,7 @@ pub const Node = struct {
             initial_value: ?*Node,
         },
         assignment: struct {
-            identifier: Token,
+            identifier: *Node,
             assignment_expr: *Node,
         },
         block: []const *Node,
@@ -174,8 +176,20 @@ pub const Node = struct {
             name: Token,
             args: []const *Node,
         },
+        string_literal: struct {
+            data: []const u8,
+        },
+        char_literal: struct {
+            char: u8,
+        },
         /// Used for literals, identifiers, etc.
         none: void,
+    };
+
+    pub const Linkage = enum {
+        @"extern",
+        @"export",
+        none,
     };
 
     pub const SwitchCase = struct {

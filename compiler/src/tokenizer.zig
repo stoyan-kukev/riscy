@@ -100,7 +100,7 @@ pub const Token = struct {
         dot,
         dot_dot,
         tilde,
-        number_literal,
+        int_literal,
         keyword_addrspace,
         keyword_align,
         keyword_allowzero,
@@ -139,6 +139,7 @@ pub const Token = struct {
         keyword_not,
         keyword_null,
         keyword_undefined,
+        keyword_orelse,
 
         pub fn lexeme(self: Tag) ?[]const u8 {
             return switch (self) {
@@ -149,7 +150,7 @@ pub const Token = struct {
                 .char_literal,
                 .eof,
                 .builtin,
-                .number_literal,
+                .int_literal,
                 => null,
 
                 .bang => "!",
@@ -232,6 +233,7 @@ pub const Token = struct {
                 .keyword_not => "not",
                 .keyword_null => "null",
                 .keyword_undefined => "undefined",
+                .keyword_orelse => "orelse",
             };
         }
 
@@ -241,7 +243,7 @@ pub const Token = struct {
                 .identifier => "an identifier",
                 .string_literal, .multiline_string_literal => "a string literal",
                 .char_literal => "a character literal",
-                .number_literal => "a number literal",
+                .int_literal => "an int literal",
                 .builtin => "a builtin function",
                 .eof => "EOF",
                 else => unreachable,
@@ -271,8 +273,6 @@ pub const Tokenizer = struct {
         dot,
         builtin,
         int,
-        int_dot,
-        float,
         slash,
         equal,
         line_comment_start,
@@ -285,6 +285,20 @@ pub const Tokenizer = struct {
             .buffer = buffer,
             .index = if (std.mem.startsWith(u8, buffer, "\xEF\xBB\xBF")) 3 else 0,
         };
+    }
+
+    pub fn debugDump(self: *Tokenizer) void {
+        std.debug.print("{s:<20} | {s:<10} | {s}\n", .{ "TAG", "LOC", "LEXEME" });
+        std.debug.print("{s:-<20}-|-{s:-<10}-|-{s:-<20}\n", .{ "", "", "" });
+
+        while (true) {
+            const token = self.next();
+
+            if (token.tag == .eof) break;
+
+            const lexeme = self.buffer[token.loc.start..token.loc.end];
+            std.debug.print("{t:<20} | {d:<4}..{d:<4} | {s}\n", .{ token.tag, token.loc.start, token.loc.end, lexeme });
+        }
     }
 
     inline fn opEqual(self: *Tokenizer, base_tag: Token.Tag, equal_tag: Token.Tag) Token.Tag {
@@ -341,7 +355,7 @@ pub const Tokenizer = struct {
                     continue :state .identifier;
                 },
                 '0'...'9' => {
-                    result.tag = .number_literal;
+                    result.tag = .int_literal;
                     self.index += 1;
                     continue :state .int;
                 },
@@ -510,24 +524,6 @@ pub const Tokenizer = struct {
                 '_', '0'...'9', 'a'...'d', 'f'...'o', 'q'...'z', 'A'...'D', 'F'...'O', 'Q'...'Z' => {
                     self.index += 1;
                     continue :state .int;
-                },
-                '.' => {
-                    self.index += 1;
-                    continue :state .int_dot;
-                },
-                else => {},
-            },
-            .int_dot => switch (self.buffer[self.index]) {
-                '_', '0'...'9', 'a'...'d', 'f'...'o', 'q'...'z', 'A'...'D', 'F'...'O', 'Q'...'Z' => {
-                    self.index += 1;
-                    continue :state .float;
-                },
-                else => self.index -= 1,
-            },
-            .float => switch (self.buffer[self.index]) {
-                '_', '0'...'9', 'a'...'d', 'f'...'o', 'q'...'z', 'A'...'D', 'F'...'O', 'Q'...'Z' => {
-                    self.index += 1;
-                    continue :state .float;
                 },
                 else => {},
             },
