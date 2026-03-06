@@ -29,8 +29,10 @@ declaration = [ "pub" ]
             , [ "=" , expression ]
             , ";";
 
-/* Mutation of existing variables */
-assignment_stmt = postfix , "=" , expression , ";";
+assignment_stmt = postfix , assignment_operator , expression , ";";
+
+assignment_operator = "=" | "+=" | "-=" | "*=" | "/=" | "%=" 
+                    | "&=" | "|=" | "^=" | "<<=" | ">>=";
 
 /* ==========================================================================
    3. CONTROL FLOW
@@ -41,9 +43,8 @@ if_stmt = "if" , "(" , expression , ")" , block , [ "else" , ( block | if_stmt )
 
 while_stmt = "while" , "(" , expression , ")" , block;
 
-for_stmt = "for" , "(" , expression , ")" , [ "|" , capture_list , "|" ] , block;
-
-capture_list = identifier , [ "," , identifier ];
+/* Captures are strictly required. Pointer capturing is allowed via '*' */
+for_stmt = "for" , "(" , expression , ")" , "|" , [ "*" ] , identifier , [ "," , identifier ] , "|" , block;
 
 return_stmt = "return" , [ expression ] , ";";
 break_stmt = "break" , ";";
@@ -61,28 +62,25 @@ switch_item = expression , [ ".." , expression ];
 /* ==========================================================================
    4. TYPES
    ========================================================================== */
-type_expr = type_prefix , type_core;
-
-/* Recursive prefixes */
-type_prefix = { pointer_prefix | "?" | "!" | multi_prefix | "allowzero" | "align" , "(" , expression , ")" };
-
-pointer_prefix = "*" | "~"; /* * = normal, ~ = volatile */
-multi_prefix   = "[" , ( "*" | "~" ) , "]";
+/* Types are parsed recursively allowing tight coupling of modifiers */
+type_expr = ( "*" | "~" ) , [ "const" ] , [ "allowzero" ] , [ "align" , "(" , expression , ")" ] , type_expr
+          | "?" , type_expr
+          | "!" , type_expr
+          | "[" , [ expression ] , "]" , [ "const" ] , type_expr
+          | type_core;
 
 type_core = identifier
           | struct_def
           | union_def
           | enum_def
-          | "[" , int_literal , "]" , type_expr /* Array: [N]T */
-          | "[" , "]" , type_expr               /* Slice: []T  */
-          | "fn" , [ "." , identifier ] , "(" , [ param_list ] , ")" , type_expr;
+          | "fn" , [ "." , ( "naked" | "interrupt" ) ] , "(" , [ param_list ] , ")" , type_expr;
 
 struct_def = "struct" , [ "." , ( "packed" | "c_abi" ) ] , "{" , { container_decl } , "}";
 union_def  = "union"  , [ "." , "c_abi" ] , "{" , { container_decl } , "}";
-enum_def   = "enum"   , [ type_expr ] , "{" , { identifier , "," } , "}";
+enum_def   = "enum"   , [ "(" , type_expr , ")" ] , "{" , { identifier , "," } , "}";
 
 container_decl = field_decl | declaration;
-field_decl     = identifier , ":" , type_expr , ",";
+field_decl = identifier , ":" , type_expr , [ "align" , "(" , expression , ")" ] , [ "=" , expression ] , ",";
 
 /* ==========================================================================
    5. EXPRESSIONS (Strict Boolean & Precedence)
@@ -108,7 +106,7 @@ term        = factor , { ( "+" | "-" ) , factor };
 factor      = unary , { ( "*" | "/" | "%" ) , unary };
 
 /* Level 5: Unary */
-unary = ( "-" | "not" | "~" ) , unary
+unary = ( "-" | "not" | "~" | "!" ) , unary
       | postfix;
 
 /* Level 6: Postfix Chain */
@@ -120,12 +118,13 @@ suffix_op = "." , "*"                 /* Dereference */
           | "." , "!"                 /* Unwrap Error (Propagate) */
           | "." , identifier          /* Field Access */
           | "[" , expression , "]"    /* Array Index */
-          | "[" , expression , ".." , expression , "]" /* Slice Creation */
+          | "[" , expression , ".." , [ expression ] , "]" /* Slice Creation */
           | "(" , [ arg_list ] , ")"  /* Function Call */;
 
 primary = int_literal
         | string_literal
         | multiline_string_literal , { multiline_string_literal }
+        | char_literal
         | identifier
         | "(" , expression , ")"
         | function_literal
@@ -136,19 +135,19 @@ primary = int_literal
 /* ==========================================================================
    6. LITERALS & HELPERS
    ========================================================================== */
-function_literal = "fn" , [ "." , identifier ] , "(" , [ param_list ] , ")" , type_expr , block;
+function_literal = "fn" , [ "." , ( "naked" | "interrupt" ) ] , "(" , [ param_list ] , ")" , type_expr , block;
+
 param_list = param , { "," , param };
-param = identifier , ":" , type_expr;
+param = identifier , ":" , type_expr , [ "align" , "(" , expression , ")" ];
 
 arg_list = expression , { "," , expression };
 
-asm_block = "asm" , [ "." , "pure" ] , "{" , asm_template , [ asm_outputs , [ asm_inputs , [ asm_clobbers ] ] ] , "}";
+/* Assembly block is 3 parts: Template : Operands : Clobbers */
+asm_block = "asm" , [ "." , ( "pure" ) ] , "{" , asm_template , [ ":" , [ asm_operand_list ] , [ ":" , [ asm_clobbers ] ] ] , "}";
 asm_template = string_literal | multiline_string_literal , { multiline_string_literal };
-asm_outputs = ":" , [ asm_operand_list ];
-asm_inputs  = ":" , [ asm_operand_list ];
-asm_clobbers = ":" , [ string_literal , { "," , string_literal } ];
 asm_operand_list = asm_operand , { "," , asm_operand };
 asm_operand = "[" , identifier , "]" , string_literal , "(" , expression , ")";
+asm_clobbers = string_literal , { "," , string_literal };
 
 builtin_call = "@" , identifier , "(" , [ arg_list ] , ")";
 

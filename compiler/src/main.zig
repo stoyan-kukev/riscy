@@ -16,5 +16,14 @@ pub fn main() !void {
 
     var parser: Parser = .init(parser_arena, test_source);
     const root_node = try parser.parseRoot();
-    _ = root_node;
+
+    var stdout_buffer: [1024]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    const stdout = &stdout_writer.interface;
+
+    try root_node.prettyPrint(stdout, 2);
+    try stdout.flush();
+
+    // var tokenizer: Tokenizer = .init(test_source);
+    // tokenizer.debugDump();
 }

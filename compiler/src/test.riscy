@@ -1,66 +1,117 @@
-// Some comments
-// to check
-// if we actually ignore them properly in the tokenizer
-pub const PI = 3;
-pub const Name = "hello";
-pub const Lmao = 'g';
-pub const Xd = 555;
-const some_assembly =
-\\ flw fa2, 0(a0)
-\\ fld fa3, 0(a1)
-\\ fcvt.s.d fa3, fa1
-\\ fcvt.s.d fa3, fa3
-\\ fadd.s fa1, fa1, fa3
-\\ fadd.s fa0, fa0, fa2
-\\ fadd.s fa0, fa0, fa1
-;
+// ============================================================================
+// RISCY PARSER STRESS TEST
+// ============================================================================
+
+// 1. Top-Level Declarations, Builtins, and Multiline Strings
+pub const std = @import("std");
+
+pub const welcome_msg = 
+    \\ Welcome to the Riscy Language!
+    \\ This string should span multiple lines
+    \\ and not break the tokenizer.
+    ;
+
+// 2. Structs, Unions, Enums, and Modifiers
+pub const Payload = union.c_abi {
+    byte: u8,
+    word: u32 align(4),
+    pointer: *const allowzero u8,
+};
+
+const State = enum(u8) {
+    Idle,
+    Running,
+    Fault,
+};
+
+pub const Registers = struct.packed {
+    ra: u32 = 0,
+    sp: u32 align(16) = 0x80000000,
+    state: State = .Idle,
+    
+    // Nested declarations inside structs
+    pub const read_ra = fn(self: *Registers) u32 {
+        return self.ra;
+    };
+};
 
 extern var _stack_start: u32;
 
-const Registers = struct.packed {
-    ra: u32,
-    sp: u32,
-    status: u8 align(4),
-};
-
-const State = enum {
-    Idle,
-    Running,
-    Error,
-};
-
-const Payload = union {
-    byte: u8,
-    word: u32,
-};
-
-export fn kernel_entry(uart_base: ~u8, buffer: []u8) !void {
-    var status: State = .Idle;
+// 3. Linksections, Functions, and Complex Type Chains
+export linksection(".init") const kernel_entry = fn.naked(hart_id: u32, dtb_ptr: ~const u8) !void {
+    // 4. Variables, Anonymous Init, and Error Types
+    var current_state: State = .Running;
+    var regs: Registers = .{ .ra = 0, .sp = _stack_start, .state = current_state, };
     
-    switch (status) {
-        .Idle => {
-            const sub_slice = buffer[0..10];
+    // 5. Defer and Errdefer (with assignment statements)
+    defer current_state = .Idle;
+    errdefer current_state = .Fault;
+
+    // 6. Arithmetic, Bitwise, and Precedence Stress Test
+    // (a + b) * c << d & e | f ^ g
+    var complex_math = (10 + 5) * 2 << 4 & 0xFF | 0x01 ^ 0x02;
+    complex_math += 1;
+    complex_math %= 2;
+
+    // 7. Arrays, Slices, and Pointers
+    const my_array: [5]u8 = .{ .a = 1, .b = 2, .c = 3, .d = 4, .e = 5, };
+    const my_slice: []const u8 = my_array[1..4];
+    
+    // 8. For Loops with Pointer and Index Captures
+    for (my_slice) |*val, index| {
+        // Postfix dereference (.*) and function calls mixed with math
+        val.* = val.* + @cast(u8, index);
+    }
+
+    // 9. While loops, If/Else, Break, and Continue
+    var counter: u32 = 0;
+    while (counter < 100) {
+        counter += 1;
+        if (counter == 42) {
+            continue;
+        } else if (counter == 99) {
+            break;
+        } else {
+            counter = counter | (1 << 2);
+        }
+    }
+
+    // 10. Switch Statements with Ranges and Blocks
+    const result = switch (counter) {
+        0..10 => 100,
+        11, 12, 13 => 200,
+        42 => {
+            const temp = 500;
+            temp * 2; // Implicit block return
         },
-        .Error => return error.HardwareFault,
         else => unreachable,
-    }
-
-    for (buffer) |byte, i| {
-        uart_base.* = byte;
-        
-        if (byte == 0) break;
-    }
-    defer uart_base.~ = 0xFF;    
-
-    const val = safe_read().!;
-    const opt = maybe_null().?;
-
-    var x = (val << 2) | 0x0F;
-    x += 1;
-
-    asm.pure {
-        "wfi" // More comments to see if we ignore them
     };
-}
 
-const ptr = @cast(*u32, 0x1000);
+    // 11. Volatile Memory Access (.~)
+    var mmio_uart: ~u32 = @intToPtr(~u32, 0x10000000);
+    mmio_uart.~ = 'A'; // Write char literal
+
+    // 12. Optionals, Errors, Unwraps, and Coalescing
+    const opt_val: ?u32 = null;
+    const unwrapped = opt_val.? + 10;
+    
+    const err_val: !u32 = error.HardwareFault;
+    const safe_val = err_val catch 0;
+    const orelse_val = opt_val orelse 55;
+
+    // 13. Inline Assembly (Volatile, Operands, Clobbers)
+    asm {
+        "csrr %[ret], mhartid"
+        : [ret] "=r" (hart_id)
+        : "memory", "t0"
+    };
+
+    return;
+};
+
+// 14. Alternative Function Modifier
+pub const trap_vector = fn.interrupt(cause: u32 align(4), epc: u32) void {
+    asm.pure {
+        "wfi"
+    };
+};

@@ -1,3 +1,4 @@
+const std = @import("std");
 const Token = @import("tokenizer.zig").Token;
 
 pub const Node = struct {
@@ -5,6 +6,47 @@ pub const Node = struct {
     tag: Tag,
     /// The token that started the parsing of this node. Used for error reporting.
     token: Token,
+
+    pub const Linkage = enum {
+        @"extern",
+        @"export",
+        none,
+    };
+
+    pub const StructModifier = enum {
+        @"packed",
+        c_abi,
+        none,
+    };
+
+    pub const FnModifier = enum {
+        naked,
+        interrupt,
+        none,
+    };
+
+    pub const UnionModifier = enum {
+        c_abi,
+        none,
+    };
+
+    pub const PointerKind = enum {
+        normal,
+        @"volatile",
+        many,
+    };
+
+    pub const SwitchCase = struct {
+        variants: []const *Node,
+        body: *Node,
+        is_else: bool,
+    };
+
+    pub const AsmOperand = struct {
+        symbol: Token,
+        constraint: Token,
+        expr: *Node,
+    };
 
     pub const Tag = enum {
         declaration,
@@ -14,13 +56,16 @@ pub const Node = struct {
         while_stmt,
         for_stmt,
         switch_stmt,
+        range_pattern,
         return_stmt,
         break_stmt,
         continue_stmt,
         defer_stmt,
         asm_block,
         fn_literal,
+        parameter,
         struct_literal,
+        field_decl,
         union_literal,
         enum_literal,
         array_type,
@@ -28,6 +73,9 @@ pub const Node = struct {
         pointer_type,
         optional_type,
         error_union_type,
+        error_literal,
+        unreachable_literal,
+        null_literal,
         binary_expr,
         unary_expr,
         ptr_dereference,
@@ -38,6 +86,7 @@ pub const Node = struct {
         index_access,
         slice_access,
         field_access,
+        field_assignment,
         root,
         struct_init,
         builtin_call,
@@ -45,6 +94,7 @@ pub const Node = struct {
         int_literal,
         string_literal,
         char_literal,
+        enum_member,
     };
 
     pub const Data = union {
@@ -60,27 +110,42 @@ pub const Node = struct {
         assignment: struct {
             identifier: *Node,
             assignment_expr: *Node,
+            operator: Token,
         },
         block: []const *Node,
         fn_literal: struct {
-            modifier: enum { naked, interrupt, none },
+            modifier: FnModifier,
             param_list: []const *Node,
             return_type_expr: *Node,
             body: *Node,
         },
+        parameter: struct {
+            type_expr: *Node,
+            align_expr: ?*Node,
+        },
         struct_literal: struct {
-            modifier: enum { @"packed", c_abi, none },
-            field_decls: ?[]*Node, // test: Abc = 50,
-            container_decls: ?[]*Node, // pub const test: Abc = 50;
+            modifier: StructModifier,
+            field_decls: ?[]*Node,
+            container_decls: ?[]*Node,
+        },
+        field_decl: struct {
+            type_expr: *Node,
+            align_expr: ?*Node,
+            default_value: ?*Node,
+        },
+        field_assignment: struct {
+            identifier: Token,
+            value: *Node,
         },
         union_literal: struct {
-            modifier: enum { c_abi, none },
+            modifier: UnionModifier,
             field_decls: ?[]*Node,
             container_decls: ?[]*Node,
         },
         enum_literal: struct {
             type_expr: ?*Node,
             literal_list: []*Node,
+            container_decls: ?[]*Node,
         },
         array_type: struct {
             size_expr: *Node,
@@ -93,7 +158,7 @@ pub const Node = struct {
         },
         pointer_type: struct {
             child_type: *Node,
-            kind: enum { normal, @"volatile", many },
+            kind: PointerKind,
             align_expr: ?*Node,
             allow_zero: bool,
             is_const: bool,
@@ -116,12 +181,17 @@ pub const Node = struct {
         for_stmt: struct {
             iterable: *Node,
             body: *Node,
-            value_capture: ?Token,
+            value_capture: Token,
+            is_value_ptr: bool,
             index_capture: ?Token,
         },
         switch_stmt: struct {
             target: *Node,
             cases: []const SwitchCase,
+        },
+        range_pattern: struct {
+            start: *Node,
+            end: *Node,
         },
         return_stmt: ?*Node,
         break_stmt: void,
@@ -145,7 +215,6 @@ pub const Node = struct {
             operator: Token.Tag,
             operand: *Node,
         },
-        /// Used for .*, .~, .?, .!
         unary_suffix: struct {
             lhs: *Node,
         },
@@ -182,25 +251,120 @@ pub const Node = struct {
         char_literal: struct {
             char: u8,
         },
-        /// Used for literals, identifiers, etc.
         none: void,
     };
 
-    pub const Linkage = enum {
-        @"extern",
-        @"export",
-        none,
-    };
+    /// Helper to print indentation
+    fn printIndent(writer: *std.io.Writer, indent: usize) !void {
+        var i: usize = 0;
+        while (i < indent) : (i += 1) {
+            try writer.writeAll("  ");
+        }
+    }
 
-    pub const SwitchCase = struct {
-        cases: []const *Node,
-        body: *Node,
-        is_else: bool,
-    };
+    /// Recursively formats the AST node to the provided writer
+    pub fn prettyPrint(self: *const Node, writer: *std.io.Writer, indent: usize) anyerror!void {
+        try printIndent(writer, indent);
+        try writer.print("{s} {{\n", .{@tagName(self.tag)});
 
-    pub const AsmOperand = struct {
-        symbol: Token,
-        constraint: Token,
-        expr: *Node,
-    };
+        const next_indent = indent + 1;
+
+        try printIndent(writer, next_indent);
+        try writer.print("token: {any},\n", .{self.token});
+
+        switch (self.tag) {
+            inline else => |tag| {
+                const payload_field = comptime blk: {
+                    const name = @tagName(tag);
+
+                    // Check exceptions that map to shared payloads
+                    if (std.mem.eql(u8, name, "ptr_dereference") or
+                        std.mem.eql(u8, name, "volatile_dereference") or
+                        std.mem.eql(u8, name, "optional_unwrap") or
+                        std.mem.eql(u8, name, "error_unwrap"))
+                    {
+                        break :blk "unary_suffix";
+                    }
+
+                    if (@hasField(Data, name)) {
+                        break :blk name;
+                    }
+
+                    break :blk "none";
+                };
+
+                try printPayload(@field(self.data, payload_field), writer, next_indent);
+            },
+        }
+
+        try printIndent(writer, indent);
+        try writer.print("}}\n", .{});
+    }
+
+    /// Dispatches printing based on the specific type inside the union payload
+    fn printPayload(payload: anytype, writer: anytype, indent: usize) anyerror!void {
+        const T = @TypeOf(payload);
+        const info = @typeInfo(T);
+
+        if (T == Token) {
+            try printIndent(writer, indent);
+            try writer.print("{any}\n", .{payload});
+            return;
+        }
+
+        switch (info) {
+            .void => {},
+            .pointer => |ptr_info| {
+                if (T == []const u8 or T == []u8) {
+                    try printIndent(writer, indent);
+                    try writer.print("\"{s}\"\n", .{payload});
+                } else if (ptr_info.size == .one) {
+                    if (T == *Node or T == *const Node) {
+                        try payload.prettyPrint(writer, indent);
+                    } else {
+                        try printPayload(payload.*, writer, indent);
+                    }
+                } else if (ptr_info.size == .slice) {
+                    if (payload.len == 0) {
+                        try printIndent(writer, indent);
+                        try writer.print("[]\n", .{});
+                    } else {
+                        for (payload) |item| {
+                            try printPayload(item, writer, indent);
+                        }
+                    }
+                } else {
+                    try printIndent(writer, indent);
+                    try writer.print("{any}\n", .{payload});
+                }
+            },
+            .optional => {
+                if (payload) |val| {
+                    try printPayload(val, writer, indent);
+                } else {
+                    try printIndent(writer, indent);
+                    try writer.print("null\n", .{});
+                }
+            },
+            .@"struct" => |struct_info| {
+                inline for (struct_info.fields) |f| {
+                    try printIndent(writer, indent);
+                    try writer.print("{s}:\n", .{f.name});
+                    try printPayload(@field(payload, f.name), writer, indent + 1);
+                }
+            },
+            .@"enum" => {
+                try printIndent(writer, indent);
+                try writer.print(".{s}\n", .{@tagName(payload)});
+            },
+            .bool, .int, .comptime_int => {
+                try printIndent(writer, indent);
+                try writer.print("{}\n", .{payload});
+            },
+            else => {
+                try printIndent(writer, indent);
+                try writer.print("{any}\n", .{payload});
+            },
+        }
+    }
 };

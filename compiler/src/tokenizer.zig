@@ -40,6 +40,10 @@ pub const Token = struct {
         .{ "false", .keyword_false },
         .{ "packed", .keyword_packed },
         .{ "c_abi", .keyword_c_abi },
+        .{ "naked", .keyword_naked },
+        .{ "interrupt", .keyword_interrupt },
+        .{ "orelse", .keyword_orelse },
+        .{ "catch", .keyword_catch },
         .{ "not", .keyword_not },
         .{ "null", .keyword_null },
         .{ "undefined", .keyword_undefined },
@@ -119,6 +123,8 @@ pub const Token = struct {
         keyword_export,
         keyword_extern,
         keyword_fn,
+        keyword_naked,
+        keyword_interrupt,
         keyword_for,
         keyword_if,
         keyword_or,
@@ -140,6 +146,20 @@ pub const Token = struct {
         keyword_null,
         keyword_undefined,
         keyword_orelse,
+
+        pub const assignment_operators: []const Tag = &.{
+            .equal,
+            .pipe_equal,
+            .percent_equal,
+            .caret_equal,
+            .plus_equal,
+            .minus_equal,
+            .star_equal,
+            .slash_equal,
+            .ampersand_equal,
+            .shift_left_equal,
+            .shift_right_equal,
+        };
 
         pub fn lexeme(self: Tag) ?[]const u8 {
             return switch (self) {
@@ -294,10 +314,10 @@ pub const Tokenizer = struct {
         while (true) {
             const token = self.next();
 
-            if (token.tag == .eof) break;
-
             const lexeme = self.buffer[token.loc.start..token.loc.end];
             std.debug.print("{t:<20} | {d:<4}..{d:<4} | {s}\n", .{ token.tag, token.loc.start, token.loc.end, lexeme });
+
+            if (token.tag == .eof) break;
         }
     }
 
@@ -417,7 +437,7 @@ pub const Tokenizer = struct {
                     '\n' => result.tag = .invalid,
                     '\\' => continue :state .string_literal_backslash,
                     '"' => self.index += 1,
-                    0x01...0x09, 0x0b...0x1f, 0x7f => {
+                    0x01...0x08, 0x0b...0x1f, 0x7f => {
                         continue :state .invalid;
                     },
                     else => continue :state .string_literal,
@@ -443,7 +463,7 @@ pub const Tokenizer = struct {
                     '\n' => result.tag = .invalid,
                     '\\' => continue :state .char_literal_backslash,
                     '\'' => self.index += 1,
-                    0x01...0x09, 0x0b...0x1f, 0x7f => {
+                    0x01...0x08, 0x0b...0x1f, 0x7f => {
                         continue :state .invalid;
                     },
                     else => continue :state .char_literal,
@@ -460,7 +480,7 @@ pub const Tokenizer = struct {
                         }
                     },
                     '\n' => result.tag = .invalid,
-                    0x01...0x09, 0x0b...0x1f, 0x7f => {
+                    0x01...0x08, 0x0b...0x1f, 0x7f => {
                         continue :state .invalid;
                     },
                     else => continue :state .char_literal,
@@ -476,7 +496,7 @@ pub const Tokenizer = struct {
                     '\r' => if (self.buffer[self.index + 1] != '\n') {
                         continue :state .invalid;
                     },
-                    0x01...0x09, 0x0b...0x0c, 0x0e...0x1f, 0x7f => continue :state .invalid,
+                    0x01...0x08, 0x0b...0x0c, 0x0e...0x1f, 0x7f => continue :state .invalid,
                     else => continue :state .multiline_string_literal,
                 }
             },
@@ -558,7 +578,7 @@ pub const Tokenizer = struct {
                         continue :state .start;
                     },
                     '\r' => continue :state .expect_newline,
-                    0x01...0x09, 0x0b...0x0c, 0x0e...0x1f, 0x7f => {
+                    0x01...0x08, 0x0b...0x0c, 0x0e...0x1f, 0x7f => {
                         continue :state .invalid;
                     },
                     else => continue :state .line_comment,
@@ -584,7 +604,7 @@ pub const Tokenizer = struct {
                         continue :state .start;
                     },
                     '\r' => continue :state .expect_newline,
-                    0x01...0x09, 0x0b...0x0c, 0x0e...0x1f, 0x7f => {
+                    0x01...0x08, 0x0b...0x0c, 0x0e...0x1f, 0x7f => {
                         continue :state .invalid;
                     },
                     else => continue :state .line_comment,

@@ -99,6 +99,9 @@ pub const Parser = struct {
             return token;
         }
 
+        std.debug.print("Unexpected token: {t}\n", .{self.curr.tag});
+        std.debug.print("{s}\n", .{self.tokenizer.buffer[self.curr.loc.start - 10 .. self.curr.loc.end + 10]});
+
         return error.UnexpectedToken;
     }
 
@@ -143,7 +146,13 @@ pub const Parser = struct {
             const section_name = try self.consume(.string_literal);
             _ = try self.consume(.r_paren);
 
-            link_section = try self.createNode(.string_literal, section_name, .{ .none = {} });
+            const raw = self.tokenizer.buffer[section_name.loc.start + 1 .. section_name.loc.end - 1];
+
+            link_section = try self.createNode(.string_literal, section_name, .{
+                .string_literal = .{
+                    .data = raw,
+                },
+            });
         }
 
         const is_const: bool = blk: {
@@ -173,21 +182,23 @@ pub const Parser = struct {
 
         _ = try self.consume(.semicolon);
 
-        return try self.createNode(.declaration, name_token, .{ .declaration = .{
-            .is_pub = is_pub,
-            .linkage = linkage,
-            .linksection_val = link_section,
-            .is_const = is_const,
-            .type_expr = type_expr,
-            .align_expr = align_expr,
-            .initial_value = init_expr,
-        } });
+        return try self.createNode(.declaration, name_token, .{
+            .declaration = .{
+                .is_pub = is_pub,
+                .linkage = linkage,
+                .linksection_val = link_section,
+                .is_const = is_const,
+                .type_expr = type_expr,
+                .align_expr = align_expr,
+                .initial_value = init_expr,
+            },
+        });
     }
 
     fn parseExpression(self: *Parser, precedence: Precedence) Parser.Error!*Node {
         var left = try self.parsePrefix();
 
-        if (precedence.lessThan(.fromTag(self.curr.tag))) {
+        while (precedence.lessThan(.fromTag(self.curr.tag))) {
             left = try self.parseInfix(left);
         }
 
@@ -229,17 +240,35 @@ pub const Parser = struct {
                 _ = try self.consume(.r_paren);
                 return expr;
             },
+            .keyword_unreachable => {
+                const name = self.curr;
+                self.advance();
+                return self.createNode(.unreachable_literal, name, .{ .none = {} });
+            },
+            .keyword_null => {
+                const token = self.curr;
+                self.advance();
+                return self.createNode(.null_literal, token, .{ .none = {} });
+            },
+            .dot => return self.parseAnonymousInit(),
             .multiline_string_literal => return self.parseMultilineStringLiteral(),
             .bang, .minus, .tilde, .keyword_not => return self.parseUnary(),
+            .star, .question_mark, .l_bracket => return self.parseTypeExpr(),
             .keyword_struct => return self.parseStructLiteral(),
             .keyword_enum => return self.parseEnumLiteral(),
             .keyword_union => return self.parseUnionLiteral(),
             .keyword_fn => return self.parseFnLiteral(),
             .keyword_if => return self.parseIf(),
             .keyword_switch => return self.parseSwitch(),
+            .keyword_error => return self.parseErrorLiteral(),
             .keyword_asm => return self.parseAsm(),
+            .builtin => return self.parseBuiltin(),
             .l_brace => return self.parseBlock(),
-            else => return error.UnexpectedToken,
+            else => {
+                std.debug.print("Unexpected token: {t}\n", .{self.curr.tag});
+                std.debug.print("{s}\n", .{self.tokenizer.buffer[self.curr.loc.start - 10 .. self.curr.loc.end + 10]});
+                return error.UnexpectedToken;
+            },
         }
     }
 
@@ -262,6 +291,12 @@ pub const Parser = struct {
             .pipe,
             .ampersand,
             .caret,
+            .shift_left,
+            .shift_right,
+            .keyword_or,
+            .keyword_and,
+            .keyword_orelse,
+            .keyword_catch,
             => {
                 self.advance();
                 const right = try self.parseExpression(.fromTag(tag));
@@ -404,23 +439,258 @@ pub const Parser = struct {
     }
 
     fn parseStructLiteral(self: *Parser) Parser.Error!*Node {
-        _ = self;
-        return error.NotImplemented;
+        const token = self.curr;
+        self.advance();
+
+        var modifier: Node.StructModifier = .none;
+        if (self.match(&.{.dot})) {
+            if (self.match(&.{.keyword_packed})) {
+                modifier = .@"packed";
+            } else if (self.match(&.{.keyword_c_abi})) {
+                modifier = .c_abi;
+            }
+        }
+
+        _ = try self.consume(.l_brace);
+
+        var field_decls: std.ArrayList(*Node) = .empty;
+        var container_decls: std.ArrayList(*Node) = .empty;
+        while (!self.check(&.{ .r_brace, .eof })) {
+            if (self.check(&.{.identifier})) {
+                const name = try self.consume(.identifier);
+
+                _ = try self.consume(.colon);
+
+                const type_expr = try self.parseTypeExpr();
+
+                var align_expr: ?*Node = null;
+                if (self.match(&.{.keyword_align})) {
+                    _ = try self.consume(.l_paren);
+                    align_expr = try self.parseExpression(.lowest);
+                    _ = try self.consume(.r_paren);
+                }
+
+                var default_value: ?*Node = null;
+                if (self.match(&.{.equal})) {
+                    default_value = try self.parseExpression(.lowest);
+                }
+
+                const node = try self.createNode(.field_decl, name, .{
+                    .field_decl = .{
+                        .type_expr = type_expr,
+                        .align_expr = align_expr,
+                        .default_value = default_value,
+                    },
+                });
+
+                _ = try self.consume(.comma);
+
+                try field_decls.append(self.arena, node);
+            } else {
+                try container_decls.append(self.arena, try self.parseDeclaration());
+            }
+        }
+
+        _ = try self.consume(.r_brace);
+
+        return try self.createNode(.struct_literal, token, .{
+            .struct_literal = .{
+                .modifier = modifier,
+                .field_decls = try field_decls.toOwnedSlice(self.arena),
+                .container_decls = try container_decls.toOwnedSlice(self.arena),
+            },
+        });
     }
 
     fn parseEnumLiteral(self: *Parser) Parser.Error!*Node {
-        _ = self;
-        return error.NotImplemented;
+        const token = self.curr;
+        self.advance();
+
+        var type_expr: ?*Node = null;
+        if (self.match(&.{.l_paren})) {
+            type_expr = try self.parseTypeExpr();
+            _ = try self.consume(.r_paren);
+        }
+
+        _ = try self.consume(.l_brace);
+
+        var literal_list: std.ArrayList(*Node) = .empty;
+        var container_decls: std.ArrayList(*Node) = .empty;
+        while (!self.check(&.{ .r_brace, .eof })) {
+            if (self.check(&.{.identifier})) {
+                const identifier = try self.consume(.identifier);
+                const node = try self.createNode(.enum_member, identifier, .{ .none = {} });
+                try literal_list.append(self.arena, node);
+
+                _ = try self.consume(.comma);
+            } else {
+                try container_decls.append(self.arena, try self.parseDeclaration());
+            }
+        }
+
+        _ = try self.consume(.r_brace);
+
+        return try self.createNode(.enum_literal, token, .{
+            .enum_literal = .{
+                .type_expr = type_expr,
+                .literal_list = try literal_list.toOwnedSlice(self.arena),
+                .container_decls = try container_decls.toOwnedSlice(self.arena),
+            },
+        });
     }
 
     fn parseUnionLiteral(self: *Parser) Parser.Error!*Node {
-        _ = self;
-        return error.NotImplemented;
+        const token = self.curr;
+        self.advance();
+
+        var union_modifier: Node.UnionModifier = .none;
+        if (self.match(&.{.dot}) and self.match(&.{.keyword_c_abi})) {
+            union_modifier = .c_abi;
+        }
+
+        _ = try self.consume(.l_brace);
+
+        var field_decls: std.ArrayList(*Node) = .empty;
+        var container_decls: std.ArrayList(*Node) = .empty;
+        while (!self.check(&.{ .r_brace, .eof })) {
+            if (self.check(&.{.identifier})) {
+                const name = try self.consume(.identifier);
+
+                _ = try self.consume(.colon);
+
+                const type_expr = try self.parseTypeExpr();
+
+                var align_expr: ?*Node = null;
+                if (self.match(&.{.keyword_align})) {
+                    _ = try self.consume(.l_paren);
+                    align_expr = try self.parseExpression(.lowest);
+                    _ = try self.consume(.r_paren);
+                }
+
+                var default_value: ?*Node = null;
+                if (self.match(&.{.equal})) {
+                    default_value = try self.parseExpression(.lowest);
+                }
+
+                const node = try self.createNode(.field_decl, name, .{
+                    .field_decl = .{
+                        .type_expr = type_expr,
+                        .align_expr = align_expr,
+                        .default_value = default_value,
+                    },
+                });
+
+                _ = try self.consume(.comma);
+
+                try field_decls.append(self.arena, node);
+            } else {
+                try container_decls.append(self.arena, try self.parseDeclaration());
+            }
+        }
+
+        _ = try self.consume(.r_brace);
+
+        return try self.createNode(.union_literal, token, .{
+            .union_literal = .{
+                .modifier = union_modifier,
+                .field_decls = try field_decls.toOwnedSlice(self.arena),
+                .container_decls = try container_decls.toOwnedSlice(self.arena),
+            },
+        });
     }
 
     fn parseFnLiteral(self: *Parser) Parser.Error!*Node {
-        _ = self;
-        return error.NotImplemented;
+        const token = self.curr;
+        self.advance();
+
+        var fn_modifier: Node.FnModifier = .none;
+        if (self.match(&.{.dot})) {
+            if (self.match(&.{.keyword_naked})) {
+                fn_modifier = .naked;
+            } else if (self.match(&.{.keyword_interrupt})) {
+                fn_modifier = .interrupt;
+            }
+        }
+
+        _ = try self.consume(.l_paren);
+
+        var param_list: std.ArrayList(*Node) = .empty;
+        while (!self.check(&.{ .r_paren, .eof })) {
+            const name = try self.consume(.identifier);
+            _ = try self.consume(.colon);
+
+            const type_expr = try self.parseTypeExpr();
+
+            var align_expr: ?*Node = null;
+            if (self.match(&.{.keyword_align})) {
+                _ = try self.consume(.l_paren);
+                align_expr = try self.parseExpression(.lowest);
+                _ = try self.consume(.r_paren);
+            }
+
+            _ = self.match(&.{.comma});
+
+            const param = try self.createNode(.parameter, name, .{
+                .parameter = .{
+                    .type_expr = type_expr,
+                    .align_expr = align_expr,
+                },
+            });
+
+            try param_list.append(self.arena, param);
+        }
+
+        _ = try self.consume(.r_paren);
+
+        const return_type_expr = try self.parseTypeExpr();
+
+        const body = try self.parseBlock();
+
+        return try self.createNode(.fn_literal, token, .{
+            .fn_literal = .{
+                .modifier = fn_modifier,
+                .param_list = try param_list.toOwnedSlice(self.arena),
+                .return_type_expr = return_type_expr,
+                .body = body,
+            },
+        });
+    }
+
+    fn parseBuiltin(self: *Parser) Parser.Error!*Node {
+        const name = self.curr;
+        self.advance();
+
+        _ = try self.consume(.l_paren);
+
+        var args: std.ArrayList(*Node) = .empty;
+
+        if (!self.check(&.{ .r_paren, .eof })) {
+            while (true) {
+                const arg = try self.parseExpression(.lowest);
+                try args.append(self.arena, arg);
+
+                if (!self.match(&.{.comma})) break;
+            }
+        }
+
+        _ = try self.consume(.r_paren);
+
+        return self.createNode(.builtin_call, name, .{
+            .builtin_call = .{
+                .name = name,
+                .args = try args.toOwnedSlice(self.arena),
+            },
+        });
+    }
+
+    fn parseErrorLiteral(self: *Parser) Parser.Error!*Node {
+        self.advance();
+
+        _ = try self.consume(.dot);
+
+        const error_name = try self.consume(.identifier);
+
+        return try self.createNode(.error_literal, error_name, .{ .none = {} });
     }
 
     fn parseIf(self: *Parser) Parser.Error!*Node {
@@ -466,13 +736,96 @@ pub const Parser = struct {
     }
 
     fn parseFor(self: *Parser) Parser.Error!*Node {
-        _ = self;
-        return error.NotImplemented;
+        const token = self.curr;
+        self.advance();
+
+        _ = try self.consume(.l_paren);
+        const iterable = try self.parseExpression(.lowest);
+        _ = try self.consume(.r_paren);
+
+        _ = try self.consume(.pipe);
+
+        const is_value_ptr = self.match(&.{.star});
+
+        const value_capture = try self.consume(.identifier);
+        var index_capture: ?Token = null;
+        if (self.match(&.{.comma})) {
+            index_capture = try self.consume(.identifier);
+        }
+        _ = try self.consume(.pipe);
+
+        const body = try self.parseBlock();
+
+        return try self.createNode(.for_stmt, token, .{
+            .for_stmt = .{
+                .iterable = iterable,
+                .body = body,
+                .value_capture = value_capture,
+                .is_value_ptr = is_value_ptr,
+                .index_capture = index_capture,
+            },
+        });
     }
 
     fn parseSwitch(self: *Parser) Parser.Error!*Node {
-        _ = self;
-        return error.NotImplemented;
+        const token = self.curr;
+        self.advance();
+
+        _ = try self.consume(.l_paren);
+        const target = try self.parseExpression(.lowest);
+        _ = try self.consume(.r_paren);
+
+        var cases: std.ArrayList(Node.SwitchCase) = .empty;
+
+        _ = try self.consume(.l_brace);
+        while (!self.check(&.{ .r_brace, .eof })) {
+            var variants: std.ArrayList(*Node) = .empty;
+
+            const is_else = self.match(&.{.keyword_else});
+
+            if (!is_else) while (true) {
+                var variant = try self.parseExpression(.lowest);
+                if (self.check(&.{.dot_dot})) {
+                    const range_token = self.curr;
+                    self.advance();
+
+                    const r_expr = try self.parseExpression(.lowest);
+                    const range = try self.createNode(.range_pattern, range_token, .{
+                        .range_pattern = .{
+                            .start = variant,
+                            .end = r_expr,
+                        },
+                    });
+
+                    variant = range;
+                }
+
+                try variants.append(self.arena, variant);
+
+                if (!self.match(&.{.comma})) break;
+            };
+
+            _ = try self.consume(.arrow);
+
+            const body = try self.parseExpression(.lowest);
+
+            _ = try self.consume(.comma);
+
+            try cases.append(self.arena, .{
+                .variants = try variants.toOwnedSlice(self.arena),
+                .body = body,
+                .is_else = is_else,
+            });
+        }
+
+        _ = try self.consume(.r_brace);
+
+        return try self.createNode(.switch_stmt, token, .{
+            .switch_stmt = .{
+                .target = target,
+                .cases = try cases.toOwnedSlice(self.arena),
+            },
+        });
     }
 
     fn parseReturn(self: *Parser) Parser.Error!*Node {
@@ -497,7 +850,7 @@ pub const Parser = struct {
         self.advance();
 
         _ = try self.consume(.semicolon);
-        return self.createNode(.continue_stmt, token, .{ .none = {} });
+        return self.createNode(.break_stmt, token, .{ .break_stmt = {} });
     }
 
     fn parseContinue(self: *Parser) Parser.Error!*Node {
@@ -505,7 +858,7 @@ pub const Parser = struct {
         self.advance();
 
         _ = try self.consume(.semicolon);
-        return self.createNode(.continue_stmt, token, .{ .none = {} });
+        return self.createNode(.continue_stmt, token, .{ .continue_stmt = {} });
     }
 
     fn parseDefer(self: *Parser) Parser.Error!*Node {
@@ -523,8 +876,108 @@ pub const Parser = struct {
     }
 
     fn parseAsm(self: *Parser) Parser.Error!*Node {
-        _ = self;
-        return error.NotImplemented;
+        const start_token = self.curr;
+        self.advance();
+
+        var is_pure = false;
+
+        if (self.match(&.{.dot})) {
+            if (self.match(&.{.keyword_pure})) {
+                is_pure = true;
+            }
+        }
+
+        _ = try self.consume(.l_brace);
+
+        const body = try self.parseExpression(.lowest);
+
+        var operands: std.ArrayList(Node.AsmOperand) = .empty;
+        var clobbers: std.ArrayList(Token) = .empty;
+
+        if (self.match(&.{.colon})) {
+            while (!self.check(&.{ .colon, .r_brace, .eof })) {
+                _ = try self.consume(.l_bracket);
+                const symbol = try self.consume(.identifier);
+                _ = try self.consume(.r_bracket);
+
+                const constraint = try self.consume(.string_literal);
+
+                _ = try self.consume(.l_paren);
+                const expr = try self.parseExpression(.lowest);
+                _ = try self.consume(.r_paren);
+
+                try operands.append(self.arena, .{
+                    .symbol = symbol,
+                    .constraint = constraint,
+                    .expr = expr,
+                });
+
+                if (!self.match(&.{.comma})) break;
+            }
+        }
+
+        if (self.match(&.{.colon})) {
+            while (!self.check(&.{ .r_brace, .eof })) {
+                const clobber = try self.consume(.string_literal);
+                try clobbers.append(self.arena, clobber);
+
+                if (!self.match(&.{.comma})) break;
+            }
+        }
+
+        _ = try self.consume(.r_brace);
+
+        _ = self.match(&.{.semicolon});
+
+        return try self.createNode(.asm_block, start_token, .{
+            .asm_block = .{
+                .is_pure = is_pure,
+                .body = body,
+                .operands = try operands.toOwnedSlice(self.arena),
+                .clobbers = try clobbers.toOwnedSlice(self.arena),
+            },
+        });
+    }
+
+    fn parseAnonymousInit(self: *Parser) Parser.Error!*Node {
+        const token = self.curr;
+        self.advance();
+
+        if (self.match(&.{.l_brace})) {
+            // Anonymous struct, union init
+            var field_assignments: std.ArrayList(*Node) = .empty;
+            while (!self.check(&.{ .r_brace, .eof })) {
+                const tok = try self.consume(.dot);
+                const identifier = try self.consume(.identifier);
+                _ = try self.consume(.equal);
+                const value = try self.parseExpression(.lowest);
+
+                _ = try self.consume(.comma);
+
+                try field_assignments.append(self.arena, try self.createNode(
+                    .field_assignment,
+                    tok,
+                    .{
+                        .field_assignment = .{
+                            .identifier = identifier,
+                            .value = value,
+                        },
+                    },
+                ));
+            }
+
+            _ = try self.consume(.r_brace);
+
+            return try self.createNode(.struct_init, token, .{
+                .struct_init = .{
+                    .fields = try field_assignments.toOwnedSlice(self.arena),
+                },
+            });
+        } else {
+            // Enum member
+            const member = try self.consume(.identifier);
+            return try self.createNode(.enum_member, member, .{ .none = {} });
+        }
     }
 
     fn parseStatement(self: *Parser) Parser.Error!*Node {
@@ -551,17 +1004,19 @@ pub const Parser = struct {
     fn parseAssignmentOrExprStmt(self: *Parser) Parser.Error!*Node {
         const lhs = try self.parseExpression(.lowest);
 
-        if (self.match(&.{.equal})) {
-            const equal_token = self.curr;
+        if (self.check(Token.Tag.assignment_operators)) {
+            const operator_token = self.curr;
+            self.advance();
 
             const rhs = try self.parseExpression(.lowest);
 
             _ = try self.consume(.semicolon);
 
-            return self.createNode(.assignment, equal_token, .{
+            return self.createNode(.assignment, operator_token, .{
                 .assignment = .{
                     .identifier = lhs,
                     .assignment_expr = rhs,
+                    .operator = operator_token,
                 },
             });
         }
