@@ -12,6 +12,8 @@ pub const Symbol = struct {
     decl_node: *Node,
     is_pub: bool,
     is_const: bool,
+    fn_depth: usize = 0,
+    is_resolving: bool = false,
 };
 
 pub const Scope = struct {
@@ -55,10 +57,14 @@ pub const Analyzer = struct {
     type_map: std.AutoHashMap(*Node, *Type),
     /// Maps an identifier usage node (like `x`) to the Symbol it refers to.
     symbol_map: std.AutoHashMap(*Node, *Symbol),
+    /// Maps `error.ErrorName` tags to a unique autoincrementing error code
+    error_map: std.StringHashMap(u16),
     /// Cache to ensure every unique type only exists in memory exactly once.
     type_interner: TypeInterner,
     /// The return type of the function we are currently inside. null if global.
     expected_return_type: ?*Type = null,
+    /// Keeps track of the current error code used for `error.ErrorName` tags
+    current_error_code: u16 = 1,
     /// How many loops deep we are. 0 means we are not in a loop.
     loop_depth: usize = 0,
     /// Tracks the function depth. 0 means global. Used to ban closures.
@@ -213,13 +219,34 @@ pub const Analyzer = struct {
         return error.TODO;
     }
 
-    /// Implementation Details: Look up the name string in `self.current_scope`.
-    /// If found, map the AST Node to the Symbol in `self.symbol_map` so Codegen can find it.
-    /// Assign the Symbol's type to this Node in `self.type_map`.
     fn analyzeIdentifier(self: *Analyzer, node: *Node) !void {
-        _ = self;
-        _ = node;
-        return error.TODO;
+        const identifier = self.source[node.token.loc.start..node.token.loc.end];
+
+        if (self.current_scope.lookup(identifier)) |symbol| {
+            try self.symbol_map.put(node, symbol);
+
+            if (symbol.type) |resolved_type| {
+                try self.type_map.put(node, resolved_type);
+            } else {
+                if (symbol.is_resolving) {
+                    std.debug.print("Error: Cyclic dependency detected for '{s}'\n", .{identifier});
+                    return error.CyclicDependency;
+                }
+
+                symbol.is_resolving = true;
+                try self.analyzeDeclaration(symbol.decl_node);
+                symbol.is_resolving = false;
+
+                if (symbol.type) |inferred_type| {
+                    try self.type_map.put(node, inferred_type);
+                } else {
+                    return error.InferenceFailed;
+                }
+            }
+        } else {
+            std.debug.print("Error: Use of undeclared identifier '{s}'\n", .{identifier});
+            return error.UsingUndeclaredIdentifier;
+        }
     }
 
     /// Implementation Details: The operator dictates the rules.
@@ -280,18 +307,24 @@ pub const Analyzer = struct {
         return error.TODO;
     }
 
-    /// Implementation Details: The compiler doesn't care about the literal's value right now,
-    /// just immediately push the corresponding primitive type into `self.type_map`.
     fn analyzeLiteral(self: *Analyzer, node: *Node) !void {
-        _ = self;
-
         switch (node.tag) {
-            .int_literal => {},
-            .string_literal => {},
-            .char_literal => {},
-            .null_literal => {},
-            .unreachable_literal => {},
-            .error_literal => {},
+            .int_literal => try self.type_map.put(node, self.type_interner.type_u32),
+            .char_literal => try self.type_map.put(node, self.type_interner.type_u8),
+            .null_literal => try self.type_map.put(node, self.type_interner.type_null),
+            .unreachable_literal => try self.type_map.put(node, self.type_interner.type_noreturn),
+            .string_literal => {
+                const slice_type = try self.type_interner.getSliceType(self.type_interner.type_u8, true);
+                try self.type_map.put(node, slice_type);
+            },
+            .error_literal => {
+                const err_name = self.source[node.token.loc.start + 6 .. node.token.loc.end];
+                if (!self.error_map.contains(err_name)) {
+                    try self.error_map.put(err_name, self.current_error_code);
+                    self.current_error_code += 1;
+                }
+                try self.type_map.put(node, self.type_interner.type_anyerror);
+            },
         }
     }
 };

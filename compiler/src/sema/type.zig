@@ -15,6 +15,9 @@ pub const Type = struct {
         boolean: void,
         type: void,
         void_type: void,
+        null_type: void,
+        anyerror: void,
+        noreturn: void,
 
         slice: Slice,
         array: Array,
@@ -47,29 +50,47 @@ pub const TypeInterner = struct {
     map: std.AutoHashMap(Type, *Type),
 
     type_u8: *Type,
+    type_u16: *Type,
     type_u32: *Type,
+    type_i8: *Type,
+    type_i16: *Type,
+    type_i32: *Type,
     type_bool: *Type,
     type_void: *Type,
     type_null: *Type,
     type_type: *Type,
+    type_noreturn: *Type,
+    type_anyerror: *Type,
 
     pub fn init(arena: std.mem.Allocator) !TypeInterner {
         var self = TypeInterner{
             .arena = arena,
             .map = std.AutoHashMap(Type, *Type).init(arena),
             .type_u8 = undefined,
+            .type_u16 = undefined,
             .type_u32 = undefined,
+            .type_i8 = undefined,
+            .type_i16 = undefined,
+            .type_i32 = undefined,
             .type_bool = undefined,
             .type_void = undefined,
-            .type_type = undefined,
             .type_null = undefined,
+            .type_anyerror = undefined,
+            .type_noreturn = undefined,
+            .type_type = undefined,
         };
 
         self.type_u8 = try self.intern(.{ .size = 1, .alignment = 1, .tag = .u8 });
+        self.type_u16 = try self.intern(.{ .size = 2, .alignment = 2, .tag = .u16 });
         self.type_u32 = try self.intern(.{ .size = 4, .alignment = 4, .tag = .u32 });
+        self.type_i8 = try self.intern(.{ .size = 1, .alignment = 1, .tag = .i8 });
+        self.type_i16 = try self.intern(.{ .size = 2, .alignment = 2, .tag = .i16 });
+        self.type_i32 = try self.intern(.{ .size = 4, .alignment = 4, .tag = .i32 });
         self.type_bool = try self.intern(.{ .size = 1, .alignment = 1, .tag = .boolean });
         self.type_void = try self.intern(.{ .size = 0, .alignment = 0, .tag = .void_type });
-        self.type_void = try self.intern(.{ .size = 0, .alignment = 0, .tag = .null_type });
+        self.type_null = try self.intern(.{ .size = 0, .alignment = 0, .tag = .null_type });
+        self.type_anyerror = try self.intern(.{ .size = 2, .alignment = 2, .tag = .anyerror });
+        self.type_noreturn = try self.intern(.{ .size = 0, .alignment = 0, .tag = .noreturn });
         self.type_type = try self.intern(.{ .size = 0, .alignment = 0, .tag = .type });
 
         return self;
@@ -97,19 +118,31 @@ pub const TypeInterner = struct {
         is_const: bool,
         is_allowzero: bool,
     ) !*Type {
-        return try self.intern(.{ .size = 4, .alignment = 4, .tag = .{ .pointer = .{
-            .child = child,
-            .kind = kind,
-            .is_const = is_const,
-            .is_allowzero = is_allowzero,
-        } } });
+        return try self.intern(.{
+            .size = 4,
+            .alignment = 4,
+            .tag = .{
+                .pointer = .{
+                    .child = child,
+                    .kind = kind,
+                    .is_const = is_const,
+                    .is_allowzero = is_allowzero,
+                },
+            },
+        });
     }
 
     /// Wraps a child type in a slice. E.g., turning `u8` into `[]const u8`
     pub fn getSliceType(self: *TypeInterner, child: *Type, is_const: bool) !*Type {
-        return try self.intern(.{ .size = 8, .alignment = 4, .tag = .{ .slice = .{
-            .child = child,
-            .is_const = is_const,
-        } } });
+        return try self.intern(.{
+            .size = 8,
+            .alignment = 4,
+            .tag = .{
+                .slice = .{
+                    .child = child,
+                    .is_const = is_const,
+                },
+            },
+        });
     }
 };
